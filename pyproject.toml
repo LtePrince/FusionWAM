@@ -1,0 +1,32 @@
+[project]
+name = "fusionwam"
+version = "0.1.0"
+description = "Tri-expert fusion: PaliGemma (semantics) + Wan2.2 video DiT (dynamics) + action DiT (flow matching)"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.4",
+    "transformers>=4.47",
+    "accelerate>=1.0",
+    "pyyaml",
+    "numpy",
+    "einops",
+    "safetensors",
+    "sentencepiece",
+]
+
+[project.optional-dependencies]
+# On the training machine, FastWAM itself is installed from the sibling repo:
+#   uv pip install -e ../FastWAM
+# (kept out of hard deps so this package resolves standalone.)
+data = ["h5py", "imageio[ffmpeg]", "pandas", "pyarrow"]
+
+[tool.uv]
+# torch CUDA build comes from the default PyPI index; pin an explicit
+# +cu124 index here if the target machine needs a specific CUDA line.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
