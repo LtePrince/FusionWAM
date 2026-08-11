@@ -1,11 +1,11 @@
 """FusionWAM: semantic (PaliGemma) + dynamics (Wan2.2 video DiT) + action DiT.
 
 Integration contract (kept deliberately narrow):
-- FastWAM's trainer calls ``model.training_loss(sample)`` — we override it to
+- WAM's trainer calls ``model.training_loss(sample)`` — we override it to
   inject projected VLM tokens into the action expert's ``context`` before
   delegating to the parent implementation. Trainer and datasets are reused
   verbatim (see fusionwam.trainer.FusionTrainer for the one freeze-mode fix).
-- Video<->action coupling stays exactly FastWAMJoint's MoT joint attention;
+- Video<->action coupling stays exactly WAMJoint's MoT joint attention;
   ``_build_mot_attention_mask`` is overridden only to apply source dropout on
   the action->video block during training.
 
@@ -18,11 +18,11 @@ from typing import Any, Dict, Optional, Tuple
 
 import torch
 
-try:  # FastWAM is installed on the training machine (uv pip install -e ../FastWAM);
+try:  # WAM is installed on the training machine (uv pip install -e ../WAM);
     # the mask builder below stays importable without it (smoke test, tooling).
-    from fastwam.models.wan22.fastwam_joint import FastWAMJoint
+    from fusionwam.wam.models.wan22.wam_joint import WAMJoint
 except ModuleNotFoundError:  # pragma: no cover
-    FastWAMJoint = object
+    WAMJoint = object
 
 from .vlm_adapter import FrozenPaliGemmaEncoder
 
@@ -56,8 +56,8 @@ def build_tri_mot_attention_mask(
     return m
 
 
-class FusionWAM(FastWAMJoint):
-    """Stage-1 fusion: FastWAMJoint + VLM context injection into the action expert."""
+class FusionWAM(WAMJoint):
+    """Stage-1 fusion: WAMJoint + VLM context injection into the action expert."""
 
     # ------------------------------------------------------------------ build
     @classmethod

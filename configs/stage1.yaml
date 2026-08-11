@@ -2,8 +2,8 @@
 #
 # `fusion:` keys are injected into cfg.model (consumed by
 # FusionWAM.from_wan22_pretrained); `train:` keys override top-level trainer
-# config after FastWAM's hydra tree is composed. Everything else (task, data,
-# optimizer, model geometry) comes from FastWAM's own configs — pass the same
+# config after WAM's hydra tree is composed. Everything else (task, data,
+# optimizer, model geometry) comes from WAM's own configs — pass the same
 # `task=... model=...` overrides you would pass scripts/train.py upstream.
 
 fusion:

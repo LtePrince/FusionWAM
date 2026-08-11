@@ -1,12 +1,11 @@
 # FusionWAM 数据准备
 
-三个数据源,重要性排序。所有管线在实验机 `WAM/FastWAM-LoRA/` 已存在并验证过,
-本文只写"迁移时拷什么、改哪一行"。
+三个数据源,重要性排序。
 
 ## 1. LIBERO 四元组(基线,必需)
 
-lerobot 格式(帧/语言/动作/本体感),FastWAM-LoRA `data/libero_lerobot/` 直接
-rsync;或从原始 HDF5 重建(`experiments/libero/` 转换脚本)。
+`bash scripts/download_data.sh` 公网直下(HF: yuanty/LIBERO-fastwam),
+之后跑一次 `scripts/precompute_text_embeds.py`(见 docs/MIGRATION.md §3)。
 **约定检查单**(逐条核对,每条都对应一次历史事故):
 - 轴角 +π 覆盖(dim0 非负);
 - 夹爪 lerobot {0,1}(1=open),env 原生 {-1(open),+1(close)},转换 `(1-a)/2`;

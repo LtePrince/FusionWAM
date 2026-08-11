@@ -1,8 +1,7 @@
 # (可选)π0.5 微调版 PaliGemma → HF 权重转换指引
 
-**先跑判决实验再决定是否做这份工**:用实验机的 Stage-A 冻结探针协议
-(FastWAM-LoRA `experiments/cross_embodiment/probe_anchor.py`)分别指向
-base PaliGemma 与 π0.5 版特征,测位移场景 OOD 位置读出。若 base 版探针
+**先跑判决实验再决定是否做这份工**:在位移渲染场景上训一个位置探针,
+分别指向 base PaliGemma 与 π0.5 版特征,测 OOD 位置读出。若 base 版探针
 误差已 ≤2cm(OOD),转换工作可整体跳过。
 
 ## 转换要点(openpi JAX → HF PyTorch)

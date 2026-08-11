@@ -7,7 +7,7 @@ untrained while everything appears to run — exactly the class of silent
 failure the campaign taught us to close structurally, not by convention.
 """
 
-from fastwam.trainer import Wan22Trainer
+from fusionwam.wam.trainer import Wan22Trainer
 
 
 class FusionTrainer(Wan22Trainer):

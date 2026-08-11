@@ -1,7 +1,7 @@
 """FusionWAM smoke test — FIRST thing to run on the target machine.
 
 Checks, in order (each isolates one class of porting failure):
-  1. imports resolve (FastWAM installed, transformers version OK)
+  1. imports resolve (WAM installed, transformers version OK)
   2. VLM adapter: encode 1 dummy image+prompt -> projected tokens, finite
   3. fused_context: shapes/masks compose, VLM dropout path runs
   4. tri-MoT mask: block structure exactly matches the spec

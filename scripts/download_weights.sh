@@ -1,25 +1,34 @@
 #!/usr/bin/env bash
-# FusionWAM weight downloads — run on the TARGET machine (nothing is vendored).
-# Total ≈ 22G. Set HF_ENDPOINT=https://hf-mirror.com if huggingface is slow.
+# FusionWAM weight downloads — everything from public sources.
+# Layout matches configs/wam expectations (paths relative to repo root).
+# Slow networks: export HF_ENDPOINT=https://hf-mirror.com (non-gated repos only).
 set -euo pipefail
 DEST="${1:-./checkpoints}"
 mkdir -p "$DEST"
 
-echo "== 1/3 PaliGemma-3B (semantic expert, frozen in stage 1)"
+echo "== 1/4 PaliGemma-3B (semantic expert; LICENSE-GATED)"
+echo "   Accept the license for google/paligemma-3b-pt-224 on huggingface.co,"
+echo "   then 'huggingface-cli login' before running this script."
 huggingface-cli download google/paligemma-3b-pt-224 \
   --local-dir "$DEST/paligemma-3b-pt-224"
 
-echo "== 2/3 FastWAM release (video 5B + action 1B, LIBERO 2cam224)"
-# Same artifact the local eval uses; adjust source if you host it elsewhere.
-modelscope download Wan-AI/FastWAM-libero \
-  --local_dir "$DEST/fastwam_release" 2>/dev/null || cat <<'EOF'
-[!] FastWAM release not on modelscope under this name — copy
-    checkpoints/fastwam_release/libero_uncond_2cam224.pt from the lab
-    machine (WAM/FastWAM-LoRA/checkpoints/fastwam_release/), ~12G.
-EOF
+echo "== 2/4 WAM release checkpoint + dataset stats (HF: yuanty/fastwam)"
+huggingface-cli download yuanty/fastwam \
+  libero_uncond_2cam224.pt \
+  libero_uncond_2cam224_dataset_stats.json \
+  --local-dir "$DEST/wam_release"
 
-echo "== 3/3 umt5-xxl text encoder (video expert conditioning, stage 1 keeps it)"
-huggingface-cli download google/umt5-xxl --local-dir "$DEST/umt5-xxl" \
-  --include "*.safetensors" "*.json" "spiece.model"
+echo "== 3/4 Wan2.2 base + tokenizer"
+echo "   Auto-fetched into ./checkpoints/ on first model construction"
+echo "   (helpers/io.py; source: modelscope by default,"
+echo "    or: export DIFFSYNTH_DOWNLOAD_SOURCE=huggingface)."
+echo "   To pre-fetch explicitly instead:"
+echo "     huggingface-cli download Wan-AI/Wan2.2-TI2V-5B --local-dir $DEST/Wan-AI/Wan2.2-TI2V-5B"
+echo "     huggingface-cli download Wan-AI/Wan2.1-T2V-1.3B --local-dir $DEST/Wan-AI/Wan2.1-T2V-1.3B"
 
-echo "Optional: pi0.5-finetuned PaliGemma — see scripts/convert_pi05_vlm.md"
+echo "== 4/4 ActionDiT initialization (derived from the Wan backbone)"
+echo "   After the Wan base is present, run:"
+echo "     python scripts/preprocess_action_dit_backbone.py --help"
+echo "   and write the output to:"
+echo "     $DEST/ActionDiT_linear_interp_Wan22_alphascale_1024hdim.pt"
+echo "   (path expected by configs/wam/model/wam_joint.yaml)"

@@ -1,14 +1,14 @@
-"""FusionWAM stage-1 training entry.
+"""FusionWAM stage-1 training entry (self-contained).
 
-Composes FastWAM's own hydra config tree (so every dataset/optimizer/model
-option keeps its upstream meaning), swaps the model target for FusionWAM and
-the trainer for FusionTrainer, then runs the standard loop.
+Composes the vendored wam hydra tree (configs/wam/), swaps the model
+target for FusionWAM and the trainer for FusionTrainer, then runs the
+standard loop. No external repository is required.
 
-Usage (from FusionWAM/, FastWAM installed as sibling):
+Usage (from the repository root):
   .venv/bin/python train.py \
-      --fastwam-root ../FastWAM \
-      --fusion-config configs/stage1.yaml \
-      task=<fastwam task name> output_dir=./runs/stage1 [more hydra overrides]
+      task=libero_joint_2cam224_1e-4 output_dir=./runs/stage1 [overrides...]
+Multi-GPU:
+  bash scripts/train_zero1.sh <nproc> task=libero_joint_2cam224_1e-4 ...
 """
 
 import argparse
@@ -25,17 +25,16 @@ sys.path.insert(0, str(REPO / "src"))
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--fastwam-root", default=str(REPO.parent / "FastWAM"))
     ap.add_argument("--fusion-config", default="configs/stage1.yaml")
+    ap.add_argument("--config-dir", default=str(REPO / "configs" / "wam"),
+                    help="hydra tree for the vendored wam stack")
     ap.add_argument("overrides", nargs="*", help="hydra dotlist overrides")
     args = ap.parse_args()
 
-    fastwam_root = Path(args.fastwam_root).resolve()
-    sys.path.insert(0, str(fastwam_root / "src"))
-
     fusion_cfg = yaml.safe_load(open(REPO / args.fusion_config))
 
-    with initialize_config_dir(config_dir=str(fastwam_root / "configs"), version_base="1.3"):
+    with initialize_config_dir(config_dir=str(Path(args.config_dir).resolve()),
+                               version_base="1.3"):
         cfg = compose(config_name="train", overrides=list(args.overrides))
 
     OmegaConf.set_struct(cfg, False)
@@ -45,7 +44,7 @@ def main():
     for k, v in fusion_cfg.get("train", {}).items():
         cfg[k] = v
 
-    from fastwam.runtime import (  # noqa: E402  (imported after sys.path insert)
+    from fusionwam.wam.runtime import (  # noqa: E402
         _mixed_precision_to_model_dtype,
         _normalize_mixed_precision,
         _resolve_train_device,

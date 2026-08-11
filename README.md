@@ -1,38 +1,35 @@
 # FusionWAM
 
 **Tri-expert fusion for wide-envelope manipulation: a semantic VLM (PaliGemma), a
-video dynamics model (Wan2.2 DiT, FastWAM weights), and a flow-matching action
+video dynamics model (Wan2.2 DiT, WAM weights), and a flow-matching action
 DiT that attends over both.**
 
-This repository is a *migration package*: it contains all code, configuration,
-and preparation scripts required to train FusionWAM on a multi-GPU machine.
-Model weights and datasets are intentionally not vendored; they are fetched or
-built by the scripts in `scripts/`. The package follows the lab convention:
-code and configs in git, artifacts by download script.
+This repository is **self-contained**: model code, the vendored video-action
+training stack, hydra configuration, data/weight download scripts, and the
+acceptance evaluation all live here. Weights and datasets are not committed;
+they download from public sources via `scripts/`.
 
 > **Status.** Structure-level tests pass locally (`scripts/smoke_test.py
 > --no-weights`). A full 9B forward/backward has **not** been executed — the
 > development machine (2×RTX 3090) cannot hold the stage-1 configuration.
 > Run the smoke test, then a 1-batch training step, as the first action on the
-> target machine. Interfaces were written against FastWAM at commit state of
-> 2026-08-11; if upstream drifts, `train.py` and `src/fusionwam/trainer.py`
-> are the only two integration surfaces to re-check.
+> target machine (docs/MIGRATION.md §4). The vendored stack is pinned by
+> inclusion, so there is no upstream-drift risk.
 
 ---
 
 ## 1. Motivation
 
-Three findings from the 2026-08 envelope campaign (experiment logs:
-`WAM/note/experiment_log/`, summarized in the paper draft) motivate this
+Three findings from our 2026-08 displacement-envelope study motivate this
 architecture:
 
 1. **Envelope width tracks pretraining support, not architecture.** Under a
    seed-paired object-displacement protocol (n = 300/cell), π0.5 sustains
-   73.3% success at 10 cm displacement where FastWAM reaches 28.7% and
-   π0-base 35.3%; π0-base ≈ FastWAM shows the architecture family is not the
+   73.3% success at 10 cm displacement where WAM reaches 28.7% and
+   π0-base 35.3%; π0-base ≈ WAM shows the architecture family is not the
    differentiator — the diverse-pretrained VLM binding is.
 2. **The video model's binding cannot be rewritten at finetune scale.** Three
-   escalating interventions on FastWAM (stratified augmentation; augmentation
+   escalating interventions on WAM (stratified augmentation; augmentation
    plus a severed proprioception shortcut; doubled step budget) all plateau at
    37–47% @10 cm.
 3. **The consumption mechanism is not the bottleneck.** A 4.5 M-parameter
@@ -49,11 +46,11 @@ level — each element addressing the failure mode the campaign measured for it.
 ```
 PaliGemma VLM (3B, frozen in stage 1) ──semantic KV──┐
                                                      ├──> Action DiT (1B, flow matching)
-Wan2.2 video DiT (5B, FastWAM weights) ──dynamics KV─┘     Q attends [VLM ⊕ video ⊕ action]
+Wan2.2 video DiT (5B, WAM weights) ──dynamics KV─┘     Q attends [VLM ⊕ video ⊕ action]
 ```
 
 - **Stage 1 (this package's default).** Minimal-surgery fusion: the
-  video↔action coupling remains exactly FastWAM's MoT joint attention; the
+  video↔action coupling remains exactly WAM's MoT joint attention; the
   VLM enters as additional projected tokens in the action expert's
   cross-attention `context`, behind a LayerScale initialized near zero.
   Both backbones are frozen; trainable parameters are the action expert and
@@ -79,33 +76,38 @@ src/fusionwam/fusion_model.py   FusionWAM model: VLM context injection, MoT drop
                                 stage-2 tri-MoT mask builder
 src/fusionwam/vlm_adapter.py    Frozen PaliGemma encoder + trainable projection
 src/fusionwam/trainer.py        FusionTrainer: keeps the adapter trainable under
-                                the upstream DiT-only freeze mode
-train.py                        Entry point; composes FastWAM's hydra config tree
+                                the vendored DiT-only freeze mode
+src/fusionwam/wam/                    Vendored video-action training stack (MIT)
+configs/wam/                Vendored hydra tree (train/data/model/task)
 configs/stage1.yaml             Stage-1 fusion and trainer overrides
-scripts/download_weights.sh     Weight fetch (PaliGemma is gated — see §5.1)
-scripts/prepare_data.md         Data preparation, incl. enumerated re-rendering
+train.py                        Entry point; composes the vendored hydra tree
+scripts/download_weights.sh     Public weight fetch (PaliGemma is gated — §5.1)
+scripts/download_data.sh        Public dataset fetch (LIBERO lerobot)
+scripts/precompute_text_embeds.py  umt5 embedding cache (run once per task)
+scripts/train_zero1.sh          Multi-GPU (deepspeed zero1) launcher
+scripts/prepare_data.md         Data notes, incl. enumerated re-rendering
 scripts/convert_pi05_vlm.md     Optional π0.5-finetuned PaliGemma conversion
-scripts/smoke_test.py           Structure checks + 1-batch forward/backward
-eval/README.md                  Acceptance protocol and pre-registered decision rule
+scripts/smoke_test.py           Structure checks + adapter forward
+eval/                           Dose-protocol acceptance eval (vendored) + rule
+docs/MIGRATION.md               Complete checkout-to-training runbook
 ```
 
-## 4. Installation on the target machine
+## 4. Installation
+
+FusionWAM is **self-contained**: the wam training stack is vendored under
+`src/fusionwam/wam/`, its hydra configuration tree under `configs/wam/`, and the
+acceptance-evaluation scripts under `eval/`. All weights and datasets download
+from public sources (Hugging Face / ModelScope). See `docs/MIGRATION.md` for
+the complete checkout-to-training runbook:
 
 ```bash
-# 1. Transfer the WAM directory (FusionWAM assumes FastWAM as a sibling):
-rsync -a <lab>:Alvin/WAM/FastWAM <lab>:Alvin/WAM/FusionWAM ./WAM/
-cd WAM/FusionWAM
-
-# 2. Environment (uv-managed):
-uv venv && uv sync
-uv pip install -e ../FastWAM        # brings diffsynth & upstream deps
-
-# 3. Weights (≈22 G total; PaliGemma requires license acceptance, §5.1):
+git clone <this repo> && cd FusionWAM
+uv venv && uv sync && uv pip install -e .
+.venv/bin/huggingface-cli login          # PaliGemma is license-gated
 bash scripts/download_weights.sh ./checkpoints
-
-# 4. Verify before any long run:
-.venv/bin/python scripts/smoke_test.py --no-weights   # structure only
-.venv/bin/python scripts/smoke_test.py                # + VLM adapter forward
+bash scripts/download_data.sh
+.venv/bin/python scripts/smoke_test.py --no-weights
+.venv/bin/python scripts/smoke_test.py
 ```
 
 ## 5. Before training
@@ -116,17 +118,14 @@ license with a logged-in account (`huggingface-cli login`) before running the
 download script; mirrors do not serve gated repositories.
 
 ### 5.2 Data
-Follow `scripts/prepare_data.md`: (1) LIBERO quadruples via the existing
-lerobot pipeline — observe the convention checklist (axis-angle cover, gripper
-encoding, normalization-stats provenance, agent-view flip); (2) the
-enumeration-rendered set (~35 G, ~10 h on one EGL GPU) — this is the component
-that carries displacement support into joint training; (3) free subtask labels
-from the scripted-primitive phases if stage-2 hierarchical conditioning is
-planned.
+`bash scripts/download_data.sh` fetches the public LIBERO lerobot dataset;
+then run `scripts/precompute_text_embeds.py` once (docs/MIGRATION.md §3).
+The enumeration-rendered support set (~35 G) can be added later per
+`scripts/prepare_data.md` §2. Observe the convention checklist in that file.
 
 ### 5.3 Optional: π0.5-finetuned VLM
-Run the frozen-probe experiment first (pre-registered:
-`WAM/note/experiment_log/2026-08-11_PaliGemma探针_预注册.md`). Only if base
+Run a frozen-probe experiment first (train a position probe on PaliGemma
+features over displaced scenes, evaluate out-of-support). Only if base
 PaliGemma features fail to carry out-of-support object position is the JAX→HF
 conversion (`scripts/convert_pi05_vlm.md`, est. 1–2 days) worth doing.
 
@@ -138,16 +137,17 @@ loss curves alone do not detect binding collapse.
 ## 6. Training
 
 ```bash
-.venv/bin/python train.py \
-    --fastwam-root ../FastWAM \
-    --fusion-config configs/stage1.yaml \
-    task=<fastwam task> model=<fastwam model config> output_dir=./runs/stage1
+# smoke (single GPU):
+.venv/bin/python train.py task=libero_joint_2cam224_1e-4 \
+    output_dir=/tmp/fusion_smoke max_steps=2 save_every=1 batch_size=1
+# full run (multi-GPU):
+bash scripts/train_zero1.sh 2 task=libero_joint_2cam224_1e-4 output_dir=./runs/stage1
 ```
 
-`train.py` composes FastWAM's own hydra tree, swaps the model target to
-`FusionWAM` and the trainer to `FusionTrainer`, and applies
-`configs/stage1.yaml` on top. All upstream overrides (task, data, optimizer)
-keep their meaning.
+`train.py` composes the vendored hydra tree (`configs/wam/`), swaps the
+model target to `FusionWAM` and the trainer to `FusionTrainer`, and applies
+`configs/stage1.yaml` on top. All vendored-stack overrides (task, data,
+optimizer) keep their upstream meaning.
 
 Hardware budget, stage 1: 3B frozen (bf16 ≈ 6 G) + 5B frozen (≈ 10 G) + 1B
 training with AdamW (≈ 12 G) + activations. Recommended ≥ 2×A100-80G (or
@@ -167,7 +167,7 @@ Pre-registered decision rule for stage 1 at the 10 cm cell:
 | 45–60% | partial consumption | attention-entropy diagnosis before scaling |
 | ≤ 45% | fusion ineffective (best 6B-LoRA baseline: 46.7%) | verify source dropout is active and LayerScale has moved off its initialization |
 
-Reference anchors on the same protocol: FastWAM base 20% @10 cm; best
+Reference anchors on the same protocol: WAM base 20% @10 cm; best
 6B-LoRA variant 46.7%; π0.5 73.3%; enumerated-core upper bound (ground-truth
 anchors) 93.3% = 100% of the feasibility ceiling.
 
