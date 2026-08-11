@@ -34,7 +34,7 @@ class FrozenPaliGemmaEncoder(nn.Module):
         )
         self.vlm.requires_grad_(False)
         self.vlm.eval()
-        vlm_dim = self.vlm.config.text_config.hidden_size
+        vlm_dim = self.vlm.config.vision_config.hidden_size
 
         self.proj = nn.Linear(vlm_dim, out_dim)
         self.norm = nn.LayerNorm(out_dim)
@@ -51,17 +51,23 @@ class FrozenPaliGemmaEncoder(nn.Module):
     @torch.no_grad()
     def _encode(self, images: torch.Tensor, prompts: list) -> Tuple[torch.Tensor, torch.Tensor]:
         """images: [B,3,H,W] in [0,1] (RGB); prompts: list[str] of length B.
-        Returns (hidden [B,L,vlm_dim], mask [B,L])."""
-        inputs = self.processor(
-            text=prompts,
-            images=[img for img in images],
-            return_tensors="pt",
-            padding=True,
-        ).to(self.vlm.device)
-        out = self.vlm(**inputs, output_hidden_states=True)
-        hidden = out.hidden_states[-1]
-        mask = inputs["attention_mask"].bool()
-        return hidden, mask
+        Returns (tokens [B,L,dim], mask [B,L]).
+
+        Feature level: SigLIP vision-tower output, NOT the language model's
+        final hidden states. Probe evidence (L3, 2026-08-12): displaced-object
+        position survives nearly dose-flat in the vision tokens (OOD selection
+        92.5%) but is progressively discarded through the Gemma pass (84.7%,
+        dose-degrading). Injecting final-layer hidden states would graft the
+        worst layer. Language conditioning reaches the action expert via the
+        umt5 text context, so no semantic pathway is lost here.
+        """
+        pixel_values = self.processor.image_processor(
+            images=[img for img in images], return_tensors="pt", do_rescale=False
+        )["pixel_values"].to(self.vlm.device, dtype=self.vlm.dtype)
+        vision_out = self.vlm.vision_tower(pixel_values)
+        tokens = vision_out.last_hidden_state           # [B, 256, vision_dim]
+        mask = torch.ones(tokens.shape[:2], dtype=torch.bool, device=tokens.device)
+        return tokens, mask
 
     def forward(self, images: torch.Tensor, prompts: list) -> Tuple[torch.Tensor, torch.Tensor]:
         hidden, mask = self._encode(images, prompts)
