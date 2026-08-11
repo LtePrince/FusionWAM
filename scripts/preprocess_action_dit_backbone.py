@@ -6,8 +6,8 @@ import torch
 import torch.nn.functional as F
 from omegaconf import OmegaConf
 
-from fusionwam.wam.models.wan22.action_dit import ActionDiT
-from fusionwam.wam.models.wan22.helpers.loader import load_wan22_ti2v_5b_components
+from fusionwam.models.action_dit import ActionDiT
+from fusionwam.models.loading.loader import load_wan22_ti2v_5b_components
 
 
 def _parse_dtype(name: str) -> torch.dtype:

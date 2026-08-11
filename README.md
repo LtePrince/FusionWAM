@@ -71,31 +71,40 @@ Wan2.2 video DiT (5B, WAM weights) ──dynamics KV─┘     Q attends [VLM �
 
 ## 3. Repository layout
 
+The directory structure mirrors the architecture — three experts, their
+fusion, and the machinery around them:
+
 ```
-src/fusionwam/fusion_model.py   FusionWAM model: VLM context injection, MoT dropout,
-                                stage-2 tri-MoT mask builder
-src/fusionwam/vlm_adapter.py    Frozen PaliGemma encoder + trainable projection
-src/fusionwam/trainer.py        FusionTrainer: keeps the adapter trainable under
-                                the vendored DiT-only freeze mode
-src/fusionwam/wam/                    Vendored video-action training stack (MIT)
-configs/wam/                Vendored hydra tree (train/data/model/task)
-configs/stage1.yaml             Stage-1 fusion and trainer overrides
-train.py                        Entry point; composes the vendored hydra tree
-scripts/download_weights.sh     Public weight fetch (PaliGemma is gated — §5.1)
-scripts/download_data.sh        Public dataset fetch (LIBERO lerobot)
-scripts/precompute_text_embeds.py  umt5 embedding cache (run once per task)
-scripts/train_zero1.sh          Multi-GPU (deepspeed zero1) launcher
-scripts/prepare_data.md         Data notes, incl. enumerated re-rendering
-scripts/convert_pi05_vlm.md     Optional π0.5-finetuned PaliGemma conversion
-scripts/smoke_test.py           Structure checks + adapter forward
-eval/                           Dose-protocol acceptance eval (vendored) + rule
-docs/MIGRATION.md               Complete checkout-to-training runbook
+src/fusionwam/
+  models/                       # one file per component (openpi-style)
+    fusion.py                   #   FusionWAM: tri-expert composition + tri-MoT masks
+    paligemma.py                #   semantic expert (frozen VLM + trainable projection)
+    video_dit.py                #   dynamics expert (Wan2.2 video DiT)
+    action_dit.py               #   action expert (flow-matching DiT)
+    wam.py / wam_joint.py       #   video⊕action bi-expert composition (MoT)
+    wam_idm.py                  #   inverse-dynamics variant
+    mot.py                      #   mixture-of-transformers joint attention
+    wan22.py / vae.py / text_encoder.py / scheduler.py   # Wan2.2 plumbing
+    loading/                    #   weight download / state-dict conversion
+  training/
+    trainer.py                  # base training loop (accelerate/deepspeed)
+    fusion_trainer.py           # keeps the fusion adapter trainable under freeze mode
+    runtime.py                  # model/dataset builders (hydra targets)
+  data/                         # lerobot dataset stack (loaders, processors, transforms)
+  shared/                       # logging, fs, samplers, video io, misc utilities
+configs/
+  train.yaml + data/ model/ task/   # hydra tree
+  stage1.yaml                       # stage-1 fusion overrides
+train.py                        # entry: compose configs/, swap model+trainer targets
+scripts/                        # downloads, precompute, smoke test, multi-GPU launcher
+eval/                           # dose-protocol acceptance eval + decision rule
+docs/MIGRATION.md               # checkout-to-training runbook
 ```
 
 ## 4. Installation
 
-FusionWAM is **self-contained**: the wam training stack is vendored under
-`src/fusionwam/wam/`, its hydra configuration tree under `configs/wam/`, and the
+FusionWAM is **self-contained**: the full training stack lives under
+`src/fusionwam/`, its hydra configuration tree under `configs/`, and the
 acceptance-evaluation scripts under `eval/`. All weights and datasets download
 from public sources (Hugging Face / ModelScope). See `docs/MIGRATION.md` for
 the complete checkout-to-training runbook:
@@ -144,7 +153,7 @@ loss curves alone do not detect binding collapse.
 bash scripts/train_zero1.sh 2 task=libero_joint_2cam224_1e-4 output_dir=./runs/stage1
 ```
 
-`train.py` composes the vendored hydra tree (`configs/wam/`), swaps the
+`train.py` composes the hydra tree (`configs/`), swaps the
 model target to `FusionWAM` and the trainer to `FusionTrainer`, and applies
 `configs/stage1.yaml` on top. All vendored-stack overrides (task, data,
 optimizer) keep their upstream meaning.
@@ -175,7 +184,7 @@ anchors) 93.3% = 100% of the feasibility ceiling.
 
 - No end-to-end 9B execution has occurred; the two integration surfaces to
   validate first are the hydra composition in `train.py` and the
-  `training_loss` override path in `fusion_model.py`.
+  `training_loss` override path in `models/fusion.py`.
 - Attention-scale balance between the two KV sources is handled only by the
   VLM-branch LayerScale; if the VLM slice's attention mass stays ≈ 0 after
   warm-up, raise `vlm_layerscale_init`.

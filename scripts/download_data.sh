@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # LIBERO training data — public download (HF: yuanty/LIBERO-fastwam, ~4 tars).
-# Produces the layout expected by configs/wam/data/libero_2cam.yaml.
+# Produces the layout expected by configs/data/libero_2cam.yaml.
 set -euo pipefail
 DEST="${1:-./data/libero_mujoco3.3.2}"
 mkdir -p "$DEST"

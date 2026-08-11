@@ -1,8 +1,8 @@
 # Setup Runbook — from `git clone` to first training run
 
-FusionWAM is self-contained: the wam training stack is vendored under
-`src/fusionwam/wam/` (MIT, notice preserved there), its hydra tree under
-`configs/wam/`, and all weights and data download from public sources.
+FusionWAM is self-contained: the full training stack lives under
+`src/fusionwam/` (see NOTICE for upstream attribution), its hydra tree under
+`configs/`, and all weights and data download from public sources.
 No other repository is required.
 
 Assumptions: Linux, CUDA ≥ 12.1, ≥2×A100-80G (1×80G suffices for smoke tests),
@@ -36,8 +36,9 @@ Then derive the ActionDiT initialization:
 
 ```bash
 .venv/bin/python scripts/preprocess_action_dit_backbone.py \
-  # (see --help; output path expected by configs/wam/model/wam_joint.yaml:)
-  # ./checkpoints/ActionDiT_linear_interp_Wan22_alphascale_1024hdim.pt
+    --model-config configs/model/wam.yaml \
+    --output ./checkpoints/ActionDiT_linear_interp_Wan22_alphascale_1024hdim.pt
+# (output path expected by configs/model/wam_joint.yaml)
 ```
 
 ## 3. Training data (public; ≈40 G)
@@ -47,12 +48,11 @@ bash scripts/download_data.sh                 # HF: yuanty/LIBERO-fastwam
 .venv/bin/python scripts/precompute_text_embeds.py task=libero_joint_2cam224_1e-4
 ```
 
-First-ever run note (upstream convention): with no
-`pretrained_norm_stats`, a `dataset_stats.json` is generated in the run
-directory on the first training run; point
-`configs/wam/data/libero_2cam.yaml: pretrained_norm_stats` at it for
-subsequent runs — or use the released
-`checkpoints/wam_release/libero_uncond_2cam224_dataset_stats.json`.
+Normalization stats: simplest is the released
+`checkpoints/wam_release/libero_uncond_2cam224_dataset_stats.json` — add
+`pretrained_norm_stats: <path>` under the `train:` block of
+`configs/data/libero_2cam.yaml`. (Without it, stats are computed on first
+run and written as dataset_stats.json in the working directory.)
 
 ## 4. Tests — run in order, do not skip
 

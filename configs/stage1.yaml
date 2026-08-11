@@ -1,10 +1,10 @@
 # FusionWAM stage 1: frozen backbones, train action expert + fusion adapter.
 #
 # `fusion:` keys are injected into cfg.model (consumed by
-# FusionWAM.from_wan22_pretrained); `train:` keys override top-level trainer
-# config after WAM's hydra tree is composed. Everything else (task, data,
-# optimizer, model geometry) comes from WAM's own configs — pass the same
-# `task=... model=...` overrides you would pass scripts/train.py upstream.
+# fusionwam.training.runtime.create_fusion_model); `train:` keys are defaults
+# that CLI overrides always win over. Everything else (task, data, optimizer,
+# model geometry) comes from configs/ — pass normal hydra overrides to
+# ./train.py (e.g. task=libero_joint_2cam224_1e-4).
 
 fusion:
   vlm_path: ./checkpoints/paligemma-3b-pt-224

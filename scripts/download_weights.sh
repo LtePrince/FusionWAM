@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # FusionWAM weight downloads — everything from public sources.
-# Layout matches configs/wam expectations (paths relative to repo root).
+# Layout matches configs/ expectations (paths relative to repo root).
 # Slow networks: export HF_ENDPOINT=https://hf-mirror.com (non-gated repos only).
 set -euo pipefail
 DEST="${1:-./checkpoints}"
@@ -20,7 +20,7 @@ huggingface-cli download yuanty/fastwam \
 
 echo "== 3/4 Wan2.2 base + tokenizer"
 echo "   Auto-fetched into ./checkpoints/ on first model construction"
-echo "   (helpers/io.py; source: modelscope by default,"
+echo "   (src/fusionwam/models/loading/io.py; modelscope by default,"
 echo "    or: export DIFFSYNTH_DOWNLOAD_SOURCE=huggingface)."
 echo "   To pre-fetch explicitly instead:"
 echo "     huggingface-cli download Wan-AI/Wan2.2-TI2V-5B --local-dir $DEST/Wan-AI/Wan2.2-TI2V-5B"
@@ -31,4 +31,4 @@ echo "   After the Wan base is present, run:"
 echo "     python scripts/preprocess_action_dit_backbone.py --help"
 echo "   and write the output to:"
 echo "     $DEST/ActionDiT_linear_interp_Wan22_alphascale_1024hdim.pt"
-echo "   (path expected by configs/wam/model/wam_joint.yaml)"
+echo "   (path expected by configs/model/wam_joint.yaml)"

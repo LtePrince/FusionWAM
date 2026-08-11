@@ -13,11 +13,11 @@ import torch.distributed as dist
 from omegaconf import DictConfig, ListConfig
 from tqdm import tqdm
 
-from fusionwam.wam.datasets.lerobot.robot_video_dataset import DEFAULT_PROMPT
-from fusionwam.wam.models.wan22.helpers.loader import _load_registered_model, _resolve_configs
-from fusionwam.wam.models.wan22.wan_video_text_encoder import HuggingfaceTokenizer
-from fusionwam.wam.utils.config_resolvers import register_default_resolvers
-from fusionwam.wam.utils.logging_config import get_logger, setup_logging
+from fusionwam.data.lerobot.robot_video_dataset import DEFAULT_PROMPT
+from fusionwam.models.loading.loader import _load_registered_model, _resolve_configs
+from fusionwam.models.text_encoder import HuggingfaceTokenizer
+from fusionwam.shared.config_resolvers import register_default_resolvers
+from fusionwam.shared.logging_config import get_logger, setup_logging
 
 register_default_resolvers()
 logger = get_logger(__name__)

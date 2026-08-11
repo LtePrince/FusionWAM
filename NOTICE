@@ -1,5 +1,5 @@
-Portions of this repository (src/fusionwam/wam/, configs/wam/) are derived
-from FastWAM (MIT License):
+Portions of this repository (src/fusionwam/models/ (video/action/wan22 components), src/fusionwam/training/, src/fusionwam/data/, src/fusionwam/shared/, configs/) are derived
+from FastWAM (MIT License; weights/dataset: huggingface.co/yuanty/fastwam):
 
 MIT License
 
