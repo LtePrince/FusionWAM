@@ -12,8 +12,7 @@ Assumptions: Linux, CUDA ≥ 12.1, ≥2×A100-80G (1×80G suffices for smoke tes
 
 ```bash
 git clone <your-github-url>/FusionWAM && cd FusionWAM
-uv venv && uv sync
-uv pip install -e .
+uv venv && uv sync          # also installs fusionwam itself (editable)
 ```
 
 If your cluster requires the exact upstream CUDA build:
@@ -32,6 +31,12 @@ The script fetches PaliGemma and the WAM release checkpoint; the Wan2.2
 base (`Wan-AI/Wan2.2-TI2V-5B` + `Wan-AI/Wan2.1-T2V-1.3B` tokenizer)
 auto-downloads into `./checkpoints/` on first model construction
 (`DIFFSYNTH_DOWNLOAD_SOURCE=huggingface|modelscope` selects the source).
+
+No-HF-account alternative: openpi's public checkpoints (ungated) contain
+PaliGemma parameters — including the π0.5-finetuned variant — in JAX/orbax
+format; `scripts/convert_pi05_vlm.md` documents the JAX→HF conversion
+(~1-2 days of numerics-alignment work; the Gemma license applies to the
+weights regardless of download channel).
 Then derive the ActionDiT initialization:
 
 ```bash
@@ -57,10 +62,11 @@ run and written as dataset_stats.json in the working directory.)
 ## 4. Tests — run in order, do not skip
 
 ```bash
-# 4a. Structure only (seconds):
+# 4a. No-weights checks (~1 min): full package import walk, tri-MoT mask
+#     spec, hydra compose + every _target_ resolves:
 .venv/bin/python scripts/smoke_test.py --no-weights
 
-# 4b. VLM adapter forward (loads PaliGemma, ~1 min):
+# 4b. Adds the PaliGemma load + one VLM-adapter forward (~1 min more):
 .venv/bin/python scripts/smoke_test.py
 
 # 4c. Two-step training sanity run (single GPU, ~10 min; validates hydra
@@ -87,9 +93,18 @@ dropout configuration before spending the full budget.
 ## 6. Acceptance evaluation
 
 The displacement dose protocol requires a LIBERO simulator environment
-(separate stack: LIBERO + robosuite + MuJoCo/EGL). See `eval/README.md` for
-the protocol contract, reference anchors, and the pre-registered decision
-rule (10 cm cell: ≥60% → stage 2; ≤45% → diagnose fusion before scaling).
+(separate stack: LIBERO + robosuite + MuJoCo/EGL; the eval code itself —
+`eval/displacement_eval.py` + helpers — is vendored):
+
+```bash
+MUJOCO_GL=egl .venv/bin/python eval/displacement_eval.py \
+    --ckpt <weights checkpoint> --tasks 0-4 --trials 6 \
+    --doses 0,0.04,0.07,0.10,0.15 --out results/dose.json
+```
+
+See `eval/README.md` for the protocol contract, reference anchors, and the
+pre-registered decision rule (10 cm cell: ≥60% → stage 2; ≤45% → diagnose
+fusion before scaling).
 
 ## 7. Disk discipline
 
