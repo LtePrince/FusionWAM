@@ -1,32 +1,25 @@
-# FusionWAM stage 1: frozen backbones, train action expert + fusion params.
-fastwam:
-  # passed to FusionWAM.from_wan22_pretrained — mirror the FastWAM release
-  # config (video_dit_config.action_conditioned MUST stay false for Joint).
-  checkpoint: ./checkpoints/fastwam_release/libero_uncond_2cam224.pt
-  video_dit_config:
-    action_conditioned: false
+# FusionWAM stage 1: frozen backbones, train action expert + fusion adapter.
+#
+# `fusion:` keys are injected into cfg.model (consumed by
+# FusionWAM.from_wan22_pretrained); `train:` keys override top-level trainer
+# config after FastWAM's hydra tree is composed. Everything else (task, data,
+# optimizer, model geometry) comes from FastWAM's own configs — pass the same
+# `task=... model=...` overrides you would pass scripts/train.py upstream.
 
 fusion:
   vlm_path: ./checkpoints/paligemma-3b-pt-224
-  p_drop_vlm: 0.3        # source dropout: action must survive without VLM
-  p_drop_video: 0.3      # ...and without video KV (Gate-1/B2 lesson)
-  layerscale_init: 1.0e-3
-  tri_mot: false         # stage 2 only
+  p_drop_vlm: 0.3          # source dropout: action must survive without VLM
+  p_drop_video: 0.3        # ...and without video KV (Gate-1/B2 lesson)
+  vlm_layerscale_init: 1.0e-3
 
 train:
-  batch_size: 8          # per GPU, bf16, gradient checkpointing on
-  lr: 1.0e-4
   max_steps: 20000
-  save_every: 1000       # weights-only; full accelerate state needs 2x13G
-  save_full_state: false #   transient headroom (2026-08-09 disk incident)
-  data_root: ./data/libero_lerobot
-  enum_data_root: ./data/enum_rendered   # scripts/prepare_data.md §2
-  enum_mix_ratio: 0.5    # fraction of batches drawn from enumerated renders
+  save_every: 1000
+  # Weights-only checkpointing: a full accelerate state save needs a 2x13G
+  # transient window (2026-08-09 disk incident). Enable full state only on
+  # machines with >30G free on the checkpoint volume.
+  save_full_state: false
 
-eval:
-  # acceptance = dose protocol, NOT in-distribution success (campaign rule)
-  protocol: dose_displacement
-  doses_cm: [0, 4, 7, 10, 15]
-  n_per_cell: 30
-  with_zero_dose_control: true
-  feasibility_ceiling_for_far_cells: true
+# Acceptance evaluation (not consumed by train.py — protocol contract):
+#   dose displacement scan {0,4,7,10,15}cm, n=30/cell, zero-dose control,
+#   feasibility-adjusted far cells. See eval/README.md for the decision rule.

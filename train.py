@@ -1,63 +1,68 @@
-"""FusionWAM stage-1 training entry (adaptation of FastWAM's trainer).
+"""FusionWAM stage-1 training entry.
 
-Freezes: Wan2.2 video expert, PaliGemma. Trains: action expert, VLM
-projection/segment/layerscale. Loss: action flow matching (+ optional video
-co-generation kept OFF in stage 1 — the video expert is frozen, its
-co-generation objective belongs to stage 2).
+Composes FastWAM's own hydra config tree (so every dataset/optimizer/model
+option keeps its upstream meaning), swaps the model target for FusionWAM and
+the trainer for FusionTrainer, then runs the standard loop.
 
-Run (big machine):
-  python train.py --config configs/stage1.yaml
-
-This file is a thin orchestrator: dataset/optimizer/checkpointing reuse
-FastWAM's trainer utilities verbatim (import path below). The three fusion
-hooks are marked # FUSION.
+Usage (from FusionWAM/, FastWAM installed as sibling):
+  .venv/bin/python train.py \
+      --fastwam-root ../FastWAM \
+      --fusion-config configs/stage1.yaml \
+      task=<fastwam task name> output_dir=./runs/stage1 [more hydra overrides]
 """
 
 import argparse
 import sys
 from pathlib import Path
 
-import torch
 import yaml
+from hydra import compose, initialize_config_dir
+from omegaconf import OmegaConf
 
 REPO = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO / "src"))
-# Expect FastWAM installed (pip install -e ../FastWAM) or on PYTHONPATH.
-
-from fusionwam.fusion_model import FusionWAM  # noqa: E402
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="configs/stage1.yaml")
+    ap.add_argument("--fastwam-root", default=str(REPO.parent / "FastWAM"))
+    ap.add_argument("--fusion-config", default="configs/stage1.yaml")
+    ap.add_argument("overrides", nargs="*", help="hydra dotlist overrides")
     args = ap.parse_args()
-    cfg = yaml.safe_load(open(args.config))
 
-    model = FusionWAM.from_wan22_pretrained(**cfg["fastwam"])          # video+action
-    model.attach_vlm(
-        cfg["fusion"]["vlm_path"],
-        p_drop_vlm=cfg["fusion"]["p_drop_vlm"],
-        p_drop_video=cfg["fusion"]["p_drop_video"],
-        layerscale_init=cfg["fusion"]["layerscale_init"],
+    fastwam_root = Path(args.fastwam_root).resolve()
+    sys.path.insert(0, str(fastwam_root / "src"))
+
+    fusion_cfg = yaml.safe_load(open(REPO / args.fusion_config))
+
+    with initialize_config_dir(config_dir=str(fastwam_root / "configs"), version_base="1.3"):
+        cfg = compose(config_name="train", overrides=list(args.overrides))
+
+    OmegaConf.set_struct(cfg, False)
+    cfg.model._target_ = "fusionwam.fusion_model.FusionWAM.from_wan22_pretrained"
+    for k, v in fusion_cfg.get("fusion", {}).items():
+        cfg.model[k] = v
+    for k, v in fusion_cfg.get("train", {}).items():
+        cfg[k] = v
+
+    from fastwam.runtime import (  # noqa: E402  (imported after sys.path insert)
+        _mixed_precision_to_model_dtype,
+        _normalize_mixed_precision,
+        _resolve_train_device,
+        build_datasets,
     )
+    from hydra.utils import instantiate
 
-    # FUSION: freeze policy
-    model.video_expert.requires_grad_(False)
-    trainable = [p for n, p in model.named_parameters() if p.requires_grad]
-    print(f"trainable params: {sum(p.numel() for p in trainable)/1e6:.1f}M")
+    from fusionwam.trainer import FusionTrainer  # noqa: E402
 
-    # FUSION: the training loop below is FastWAM's, with two changes:
-    #   1) context = model.fused_context(umt5_ctx, umt5_mask, frame0, prompts)
-    #   2) mot_mask = model.maybe_drop_video_block(mot_mask, video_seq_len)
-    # See src/fastwam/trainer.py::train_step in the FastWAM repo for the
-    # surrounding code; port those two lines into your copy, or use the patch
-    # in scripts/trainer_stage1.patch if the upstream file is unchanged.
-    raise SystemExit(
-        "Stage-1 orchestrator: wire the two FUSION hooks into FastWAM's "
-        "trainer (see comments above), then delete this guard. Kept explicit "
-        "so the port is a conscious step on the target machine, not a silent "
-        "assumption that upstream trainer internals haven't drifted."
+    mixed_precision = _normalize_mixed_precision(cfg.mixed_precision)
+    model = instantiate(
+        cfg.model,
+        model_dtype=_mixed_precision_to_model_dtype(mixed_precision),
+        device=_resolve_train_device(),
     )
+    train_ds, val_ds = build_datasets(cfg.data)
+    FusionTrainer(cfg=cfg, model=model, train_dataset=train_ds, val_dataset=val_ds).train()
 
 
 if __name__ == "__main__":

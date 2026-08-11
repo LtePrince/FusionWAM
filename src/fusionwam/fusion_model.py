@@ -1,27 +1,20 @@
 """FusionWAM: semantic (PaliGemma) + dynamics (Wan2.2 video DiT) + action DiT.
 
-Stage 1 (this file's default path)
-----------------------------------
-Minimal-surgery fusion, faithful to both parents' mechanisms:
-- video<->action coupling stays EXACTLY FastWAMJoint's MoT joint attention;
-- the VLM enters as extra `context` tokens for the action expert's
-  cross-attention: context = [umt5_text ⊕ proj(vlm_tokens)], each with a
-  source segment embedding, VLM branch behind a LayerScale.
-Nothing in the two frozen backbones moves; new params = projection + segment
-embeddings (+ the action expert itself, which trains).
+Integration contract (kept deliberately narrow):
+- FastWAM's trainer calls ``model.training_loss(sample)`` — we override it to
+  inject projected VLM tokens into the action expert's ``context`` before
+  delegating to the parent implementation. Trainer and datasets are reused
+  verbatim (see fusionwam.trainer.FusionTrainer for the one freeze-mode fix).
+- Video<->action coupling stays exactly FastWAMJoint's MoT joint attention;
+  ``_build_mot_attention_mask`` is overridden only to apply source dropout on
+  the action->video block during training.
 
-Source-level dropout (campaign lesson "挂上≠用上" / Gate 1, B2): with
-p_drop_video the action->video block of the MoT mask is zeroed for the batch;
-with p_drop_vlm the VLM context slice is masked. Each pathway must learn to
-carry the task alone.
-
-Stage 2 (big-machine): `build_tri_mot_attention_mask` extends the MoT to
-three segments so the video expert can also read the VLM (replacing umt5).
-Enable via config `fusion.tri_mot=true` — requires unfreezing decisions
-documented in configs/stage1.yaml comments.
+Campaign-derived design rules encoded here (see README, "Design rationale"):
+frozen VLM by default, source-level dropout on both KV sources, LayerScale on
+the VLM branch starting near zero.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 
@@ -43,11 +36,11 @@ def build_tri_mot_attention_mask(
     drop_action_to_video: bool = False,
     drop_action_to_vlm: bool = False,
 ) -> torch.Tensor:
-    """[VLM ⊕ video ⊕ action] joint-attention mask (True = attend).
+    """[VLM ⊕ video ⊕ action] joint-attention mask (True = attend). Stage 2.
 
-    VLM    -> VLM              (frozen prefix, self only)
-    video  -> video (own mask) + VLM        (stage-2: semantics condition dynamics)
-    action -> action + video + VLM          (dual-KV consumption, per dropout flags)
+    VLM    -> VLM                          (frozen prefix, self only)
+    video  -> video (own mask) + VLM       (semantics condition dynamics)
+    action -> action + video + VLM         (dual-KV consumption, per dropout flags)
     """
     total = vlm_len + video_len + action_len
     m = torch.zeros((total, total), dtype=torch.bool, device=device)
@@ -66,55 +59,109 @@ def build_tri_mot_attention_mask(
 class FusionWAM(FastWAMJoint):
     """Stage-1 fusion: FastWAMJoint + VLM context injection into the action expert."""
 
-    def attach_vlm(
-        self,
-        vlm_path: str,
+    # ------------------------------------------------------------------ build
+    @classmethod
+    def from_wan22_pretrained(
+        cls,
+        vlm_path: Optional[str] = None,
         p_drop_vlm: float = 0.3,
         p_drop_video: float = 0.3,
-        layerscale_init: float = 1e-3,
+        vlm_layerscale_init: float = 1e-3,
+        **kwargs,
     ):
-        text_dim = self.action_expert.text_dim if hasattr(self.action_expert, "text_dim") else None
-        if text_dim is None:
-            # action expert embeds `context` via text_embedding: Linear(text_dim, hidden)
-            text_dim = self.action_expert.text_embedding[0].in_features
+        model = super().from_wan22_pretrained(**kwargs)
+        model.p_drop_vlm = float(p_drop_vlm)
+        model.p_drop_video = float(p_drop_video)
+        if vlm_path:
+            model.attach_vlm(vlm_path, layerscale_init=vlm_layerscale_init)
+        else:
+            model.vlm_encoder = None
+        return model
+
+    def attach_vlm(self, vlm_path: str, layerscale_init: float = 1e-3):
+        # The action expert embeds `context` via text_embedding: Sequential
+        # whose first Linear maps text_dim -> hidden_dim.
+        text_dim = self.action_expert.text_embedding[0].in_features
         self.vlm_encoder = FrozenPaliGemmaEncoder(
             vlm_path, out_dim=text_dim, layerscale_init=layerscale_init
-        )
-        self.p_drop_vlm = float(p_drop_vlm)
-        self.p_drop_video = float(p_drop_video)
+        ).to(device=self.device, dtype=self.torch_dtype)
         return self
 
-    def fused_context(
-        self,
-        text_context: torch.Tensor,
-        text_mask: Optional[torch.Tensor],
-        images: torch.Tensor,
-        prompts: list,
-    ) -> Dict[str, Any]:
-        """Assemble [umt5 ⊕ VLM] context for the action expert.
+    # -------------------------------------------------------------- utilities
+    @staticmethod
+    def _first_frame_rgb01(video: torch.Tensor) -> torch.Tensor:
+        """sample['video'] -> [B,3,H,W] in [0,1] for the VLM processor.
 
-        Returns dict(context, context_mask, dropped_vlm) — during training the
-        VLM slice is dropped with p_drop_vlm (mask zeroed, tokens kept so
-        shapes/compile stay static).
+        Accepts [B,C,T,H,W] or [B,T,C,H,W]; rescales from [-1,1] when the
+        tensor's minimum is negative (Wan-style normalization).
         """
-        B = text_context.shape[0]
-        if text_mask is None:
-            text_mask = torch.ones(
-                text_context.shape[:2], dtype=torch.bool, device=text_context.device
-            )
-        vlm_tokens, vlm_mask = self.vlm_encoder(images, prompts)
-        vlm_tokens = vlm_tokens.to(text_context.dtype)
-        dropped = False
+        if video.ndim != 5:
+            raise ValueError(f"expected 5D video tensor, got {tuple(video.shape)}")
+        frame0 = video[:, :, 0] if video.shape[1] == 3 else video[:, 0]
+        if frame0.shape[1] != 3:
+            raise ValueError(f"cannot locate RGB axis in video shape {tuple(video.shape)}")
+        frame0 = frame0.float()
+        if frame0.min() < -1e-3:
+            frame0 = (frame0 + 1.0) / 2.0
+        return frame0.clamp(0.0, 1.0)
+
+    def _fused_context(
+        self,
+        context: torch.Tensor,
+        context_mask: torch.Tensor,
+        video: torch.Tensor,
+        prompts,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """[umt5 ⊕ VLM] with source dropout on the VLM slice (mask zeroed,
+        tokens kept, so shapes stay static for compile/accumulate)."""
+        vlm_tokens, vlm_mask = self.vlm_encoder(
+            self._first_frame_rgb01(video), list(prompts)
+        )
+        vlm_tokens = vlm_tokens.to(device=context.device, dtype=context.dtype)
+        vlm_mask = vlm_mask.to(device=context_mask.device)
         if self.training and torch.rand(()) < self.p_drop_vlm:
             vlm_mask = torch.zeros_like(vlm_mask)
-            dropped = True
-        context = torch.cat([text_context, vlm_tokens], dim=1)
-        mask = torch.cat([text_mask, vlm_mask], dim=1)
-        return {"context": context, "context_mask": mask, "dropped_vlm": dropped}
+        return (
+            torch.cat([context, vlm_tokens], dim=1),
+            torch.cat([context_mask, vlm_mask], dim=1),
+        )
 
-    def maybe_drop_video_block(self, mot_mask: torch.Tensor, video_seq_len: int) -> torch.Tensor:
-        """Source dropout on the action->video MoT block (training only)."""
-        if self.training and torch.rand(()) < self.p_drop_video:
-            mot_mask = mot_mask.clone()
-            mot_mask[video_seq_len:, :video_seq_len] = False
-        return mot_mask
+    # ------------------------------------------------------------- overrides
+    def training_loss(self, sample: Dict[str, Any]):
+        if self.vlm_encoder is not None:
+            context = sample["context"]
+            context_mask = sample["context_mask"]
+            if context.ndim == 2:  # unbatched collation guard, mirror parent
+                context = context.unsqueeze(0)
+            if context_mask.ndim == 1:
+                context_mask = context_mask.unsqueeze(0)
+            context = context.to(device=self.device, dtype=self.torch_dtype)
+            context_mask = context_mask.to(device=self.device, dtype=torch.bool)
+            fused, fused_mask = self._fused_context(
+                context, context_mask, sample["video"], sample["prompt"]
+            )
+            sample = dict(sample)
+            sample["context"] = fused
+            sample["context_mask"] = fused_mask
+        return super().training_loss(sample)
+
+    @torch.no_grad()
+    def _build_mot_attention_mask(
+        self,
+        video_seq_len: int,
+        action_seq_len: int,
+        video_tokens_per_frame: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        mask = super()._build_mot_attention_mask(
+            video_seq_len=video_seq_len,
+            action_seq_len=action_seq_len,
+            video_tokens_per_frame=video_tokens_per_frame,
+            device=device,
+        )
+        # Source dropout, action->video block (Gate-1/B2: each pathway must
+        # learn to carry the task alone).
+        if self.training and torch.rand(()) < getattr(self, "p_drop_video", 0.0):
+            mask = mask.clone()
+            mask[video_seq_len:, :video_seq_len] = False
+        return mask

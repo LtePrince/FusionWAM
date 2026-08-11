@@ -1,84 +1,184 @@
-# FusionWAM:语义-动力学-动作三专家联合训练(迁移包)
+# FusionWAM
 
-> 状态:**迁移包(2026-08-11 打包)**。融合代码按 FastWAM/PaliGemma 真实接口编写,
-> 未在本机做过 9B 级端到端 smoke test(2×3090 放不下)——迁移到大机后第一件事
-> 是跑 `scripts/smoke_test.py`。本包遵循"代码+配置+数据脚本入库,权重/数据集
-> 用下载脚本"的约定。
+**Tri-expert fusion for wide-envelope manipulation: a semantic VLM (PaliGemma), a
+video dynamics model (Wan2.2 DiT, FastWAM weights), and a flow-matching action
+DiT that attends over both.**
 
-## 动机(一段话)
+This repository is a *migration package*: it contains all code, configuration,
+and preparation scripts required to train FusionWAM on a multi-GPU machine.
+Model weights and datasets are intentionally not vendored; they are fetched or
+built by the scripts in `scripts/`. The package follows the lab convention:
+code and configs in git, artifacts by download script.
 
-2026-08 包络战役(WAM/note/experiment_log/)的三个判决:
-①π0.5 的宽空间包络(10cm 位移 73.3% vs FastWAM 28.7%)来自**预训练支撑广度**,
-不是架构(π0-base≈FastWAM);②FastWAM 的 6B 视频绑定在微调级预算下不可改写
-(增广/强制视觉/双倍预算三度触墙 ~37-47%);③消费机制本身在完整支撑上可饱和
-可行性天花板(4.5M 枚举核心 10cm=93.3%=天花板 100%)。
-结论:把 **VLM 的语义绑定**(π0.5 型,携带宽包络)与 **视频模型的动力学表征**
-(FastWAM 型,协同生成目标值 4-8 分)同时挂给动作去噪器,支撑缺口用
-**枚举渲染数据**在联合训练层补——这是三条证据链指向的同一个架构。
+> **Status.** Structure-level tests pass locally (`scripts/smoke_test.py
+> --no-weights`). A full 9B forward/backward has **not** been executed — the
+> development machine (2×RTX 3090) cannot hold the stage-1 configuration.
+> Run the smoke test, then a 1-batch training step, as the first action on the
+> target machine. Interfaces were written against FastWAM at commit state of
+> 2026-08-11; if upstream drifts, `train.py` and `src/fusionwam/trainer.py`
+> are the only two integration surfaces to re-check.
 
-## 架构
+---
+
+## 1. Motivation
+
+Three findings from the 2026-08 envelope campaign (experiment logs:
+`WAM/note/experiment_log/`, summarized in the paper draft) motivate this
+architecture:
+
+1. **Envelope width tracks pretraining support, not architecture.** Under a
+   seed-paired object-displacement protocol (n = 300/cell), π0.5 sustains
+   73.3% success at 10 cm displacement where FastWAM reaches 28.7% and
+   π0-base 35.3%; π0-base ≈ FastWAM shows the architecture family is not the
+   differentiator — the diverse-pretrained VLM binding is.
+2. **The video model's binding cannot be rewritten at finetune scale.** Three
+   escalating interventions on FastWAM (stratified augmentation; augmentation
+   plus a severed proprioception shortcut; doubled step budget) all plateau at
+   37–47% @10 cm.
+3. **The consumption mechanism is not the bottleneck.** A 4.5 M-parameter
+   state-conditioned policy trained on enumerated support saturates the
+   feasibility ceiling of the same protocol (93.3% @10 cm = 100% of ceiling).
+
+Consequence: attach the *semantic binding* of a VLM and the *dynamics
+representation* of a video model to one action expert, and close the residual
+support gap with enumeration-density synthetic data at the joint-training
+level — each element addressing the failure mode the campaign measured for it.
+
+## 2. Architecture
 
 ```
-PaliGemma VLM(3B,冻结/阶段2解冻) ──语义 KV──┐
-                                              ├──> 动作 DiT(1B,flow matching)
-Wan2.2 视频 DiT(5B,FastWAM 权重)──动力学 KV──┘      Q 注意 [VLM ⊕ 视频 ⊕ 动作]
+PaliGemma VLM (3B, frozen in stage 1) ──semantic KV──┐
+                                                     ├──> Action DiT (1B, flow matching)
+Wan2.2 video DiT (5B, FastWAM weights) ──dynamics KV─┘     Q attends [VLM ⊕ video ⊕ action]
 ```
 
-- 复用 FastWAM 的 MoT 联合注意力模式(`FastWAMJoint._build_mot_attention_mask`):
-  拼接序列 + 分段 mask,各段各自的专家参数。本包把两段扩成三段。
-- **阶段 1(本包默认)**:双 backbone 冻结,只训动作专家 + 两个 KV 投影 +
-  段嵌入。VLM 与视频段互不注意(不动冻结权重的分布)。
-- **阶段 2(大机)**:VLM 替换 umt5 成为视频专家的文本条件源,全 MoT,
-  按 π0.5 配方带 web 混合集解冻联合训练。
+- **Stage 1 (this package's default).** Minimal-surgery fusion: the
+  video↔action coupling remains exactly FastWAM's MoT joint attention; the
+  VLM enters as additional projected tokens in the action expert's
+  cross-attention `context`, behind a LayerScale initialized near zero.
+  Both backbones are frozen; trainable parameters are the action expert and
+  the VLM adapter (projection, norm, segment embedding, LayerScale).
+- **Stage 2 (large-machine option).** Full tri-segment MoT
+  (`build_tri_mot_attention_mask`): the video expert also reads the VLM,
+  replacing umt5 conditioning; unfreezing requires a web-scale
+  vision-language co-training mix (§5.4).
 
-## 战役教训直接编码进本包的三条设计(不可省略)
+### Design rules derived from campaign evidence (do not remove)
 
-1. **源级 dropout**(`fusion.source_dropout`,默认 p=0.3/0.3):训练时随机置零
-   视频 KV / VLM KV,强迫每条通路独立携带任务。依据:Gate 1/B2 证明
-   "挂上≠用上",P3-B 证明训练期捷径切断有效但要在预训练层做。
-2. **VLM 默认冻结**:P1 机制判决 → π0.5 型绑定的宽支撑来自预训练多样性,
-   窄分布微调会塌缩。解冻必须配 co-training 混合集(configs/stage2 注释)。
-3. **剂量协议验收**:任何训练产物必须过 FastWAM-LoRA
-   `experiments/cross_embodiment/eval_relcond.py` 的 0/4/7/10/15cm 扫描
-   (含 0 剂量对照与可行性天花板归一),分内成功率不作为验收指标。
+| Rule | Mechanism | Evidence |
+|---|---|---|
+| Source-level dropout, both KV sources (p = 0.3 each) | `p_drop_vlm`, `p_drop_video` | Available information is not consumed unless consumption is forced (Gate 1, B2, P3-B) |
+| VLM frozen by default | stage-1 freeze policy | Wide-support binding collapses under narrow-distribution finetuning (P1 mechanism verdict) |
+| Acceptance = dose protocol, never in-distribution success | `eval/README.md` | A 99.3% in-distribution model measured 28.7% at 10 cm |
+| Weights-only checkpointing by default | `save_full_state: false` | Full trainer-state saves need a 2×13 G transient window (2026-08-09 incident) |
 
-## 目录
+## 3. Repository layout
 
 ```
-src/fusionwam/fusion_model.py   三专家融合(核心新代码)
-src/fusionwam/vlm_adapter.py    PaliGemma 冻结编码器 + KV 投影
-src/fusionwam/source_dropout.py 源级 dropout
-train.py                        阶段1 训练入口(改自 FastWAM trainer)
-scripts/download_weights.sh     权重下载(PaliGemma / FastWAM / umt5)
-scripts/convert_pi05_vlm.md     (可选)π0.5 微调版 PaliGemma 的 JAX→HF 转换指引
-scripts/prepare_data.md         数据准备:LIBERO 转换 / 枚举重渲染 / 免费子任务标签
-scripts/smoke_test.py           迁移后第一步:1 batch 前向+反向
-configs/stage1.yaml             冻结双 backbone 的默认配置
-eval/README.md                  剂量协议验收流程
+src/fusionwam/fusion_model.py   FusionWAM model: VLM context injection, MoT dropout,
+                                stage-2 tri-MoT mask builder
+src/fusionwam/vlm_adapter.py    Frozen PaliGemma encoder + trainable projection
+src/fusionwam/trainer.py        FusionTrainer: keeps the adapter trainable under
+                                the upstream DiT-only freeze mode
+train.py                        Entry point; composes FastWAM's hydra config tree
+configs/stage1.yaml             Stage-1 fusion and trainer overrides
+scripts/download_weights.sh     Weight fetch (PaliGemma is gated — see §5.1)
+scripts/prepare_data.md         Data preparation, incl. enumerated re-rendering
+scripts/convert_pi05_vlm.md     Optional π0.5-finetuned PaliGemma conversion
+scripts/smoke_test.py           Structure checks + 1-batch forward/backward
+eval/README.md                  Acceptance protocol and pre-registered decision rule
 ```
 
-## 数据计划(重要程度排序)
+## 4. Installation on the target machine
 
-1. **LIBERO 四元组**(帧/语言/动作/本体感):FastWAM-LoRA `data/` 管线现成。
-2. **枚举渲染集**:FastWAM-LoRA `experiments/envelope/enum_dataset.py` 目前
-   只录状态;按 `scripts/prepare_data.md` §2 加相机重渲染,得到像素一致的
-   枚举密度演示(这是支撑进预训练的关键,DemoGen 密度的上位替代)。
-   同一生成器的 primitive 阶段(接近/抓取/运送/释放)= 免费子任务标签(§3)。
-3. **web VL 混合集**(仅阶段 2 解冻时):π0.5 配方,防绑定塌缩。
+```bash
+# 1. Transfer the WAM directory (FusionWAM assumes FastWAM as a sibling):
+rsync -a <lab>:Alvin/WAM/FastWAM <lab>:Alvin/WAM/FusionWAM ./WAM/
+cd WAM/FusionWAM
 
-## 硬件预算
+# 2. Environment (uv-managed):
+uv venv && uv sync
+uv pip install -e ../FastWAM        # brings diffsynth & upstream deps
 
-阶段 1:3B(冻结,bf16 ≈6G)+ 5B(冻结 ≈10G)+ 1B 训练态(AdamW ≈12G)
-+ 激活 ——**建议 ≥2×A100-80G 或 4×A6000**;梯度检查点已在配置里打开。
-阶段 2 全参:≥8×A100-80G。2×3090 只能跑阶段 1 的 batch=1 冒烟(勉强)。
+# 3. Weights (≈22 G total; PaliGemma requires license acceptance, §5.1):
+bash scripts/download_weights.sh ./checkpoints
 
-## 已知风险与开放问题
+# 4. Verify before any long run:
+.venv/bin/python scripts/smoke_test.py --no-weights   # structure only
+.venv/bin/python scripts/smoke_test.py                # + VLM adapter forward
+```
 
-- **π0.5 微调版 PaliGemma 是否比 base PaliGemma 好**:未测。判决实验
-  (Stage-A 冻结探针指向两者特征,协议在 FastWAM-LoRA
-  `experiments/cross_embodiment/probe_anchor.py`)本机可跑,建议迁移前先做——
-  若 base 版特征就携带 OOD 位置,省去 JAX 转换的整个工作量。
-- 融合注意力的数值尺度(两个 KV 源的范数差)可能需要 per-source LayerScale,
-  代码里留了开关(`fusion.source_layerscale`),冒烟时看注意力熵决定。
-- 视频专家的 RoPE 频率表与 VLM 位置编码不同源,当前按段独立编码,
-  跨段相对位置无定义——这是有意的(动作 Q 对两源的注意应当是内容寻址)。
+## 5. Before training
+
+### 5.1 Gated weights
+`google/paligemma-3b-pt-224` is license-gated on Hugging Face. Accept the
+license with a logged-in account (`huggingface-cli login`) before running the
+download script; mirrors do not serve gated repositories.
+
+### 5.2 Data
+Follow `scripts/prepare_data.md`: (1) LIBERO quadruples via the existing
+lerobot pipeline — observe the convention checklist (axis-angle cover, gripper
+encoding, normalization-stats provenance, agent-view flip); (2) the
+enumeration-rendered set (~35 G, ~10 h on one EGL GPU) — this is the component
+that carries displacement support into joint training; (3) free subtask labels
+from the scripted-primitive phases if stage-2 hierarchical conditioning is
+planned.
+
+### 5.3 Optional: π0.5-finetuned VLM
+Run the frozen-probe experiment first (pre-registered:
+`WAM/note/experiment_log/2026-08-11_PaliGemma探针_预注册.md`). Only if base
+PaliGemma features fail to carry out-of-support object position is the JAX→HF
+conversion (`scripts/convert_pi05_vlm.md`, est. 1–2 days) worth doing.
+
+### 5.4 Stage 2 prerequisites
+Unfreezing the VLM requires a robot:web co-training mix (starting ratio 1:1)
+and envelope monitoring during training (dose cells 4/10 cm every N steps);
+loss curves alone do not detect binding collapse.
+
+## 6. Training
+
+```bash
+.venv/bin/python train.py \
+    --fastwam-root ../FastWAM \
+    --fusion-config configs/stage1.yaml \
+    task=<fastwam task> model=<fastwam model config> output_dir=./runs/stage1
+```
+
+`train.py` composes FastWAM's own hydra tree, swaps the model target to
+`FusionWAM` and the trainer to `FusionTrainer`, and applies
+`configs/stage1.yaml` on top. All upstream overrides (task, data, optimizer)
+keep their meaning.
+
+Hardware budget, stage 1: 3B frozen (bf16 ≈ 6 G) + 5B frozen (≈ 10 G) + 1B
+training with AdamW (≈ 12 G) + activations. Recommended ≥ 2×A100-80G (or
+4×A6000) with gradient checkpointing; batch size 1 fits a single 80 G device
+for smoke purposes.
+
+## 7. Acceptance
+
+Every trained artifact is evaluated on the displacement dose protocol
+(`eval/README.md`): tasks 0–4 × 6 trials × {0, 4, 7, 10, 15} cm with the
+legacy seed family, zero-dose control, and feasibility-adjusted far cells.
+Pre-registered decision rule for stage 1 at the 10 cm cell:
+
+| Result | Reading | Action |
+|---|---|---|
+| ≥ 60% | VLM source genuinely consumed | proceed to stage 2 |
+| 45–60% | partial consumption | attention-entropy diagnosis before scaling |
+| ≤ 45% | fusion ineffective (best 6B-LoRA baseline: 46.7%) | verify source dropout is active and LayerScale has moved off its initialization |
+
+Reference anchors on the same protocol: FastWAM base 20% @10 cm; best
+6B-LoRA variant 46.7%; π0.5 73.3%; enumerated-core upper bound (ground-truth
+anchors) 93.3% = 100% of the feasibility ceiling.
+
+## 8. Known limitations
+
+- No end-to-end 9B execution has occurred; the two integration surfaces to
+  validate first are the hydra composition in `train.py` and the
+  `training_loss` override path in `fusion_model.py`.
+- Attention-scale balance between the two KV sources is handled only by the
+  VLM-branch LayerScale; if the VLM slice's attention mass stays ≈ 0 after
+  warm-up, raise `vlm_layerscale_init`.
+- Cross-segment relative position is undefined by construction (per-source
+  positional encodings); action-to-source attention is content-addressed.
+  This is a deliberate choice, not an oversight.
