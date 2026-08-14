@@ -420,11 +420,11 @@ class WAM(torch.nn.Module):
 
     @torch.no_grad()
     def _consume_extra_kv(self):
-        """Per-forward KV prefix stash; FusionWAM fills it in training_loss/
-        infer paths, base WAM has none. Popped so it never leaks across calls."""
-        stash = getattr(self, "_extra_kv_stash", None)
-        self._extra_kv_stash = None
-        return stash
+        """KV prefix stash; FusionWAM fills it in training_loss/infer paths
+        (base WAM has none) and clears it in a finally block. NOT popped here:
+        the denoising loop consumes the same prefix once per step, exactly
+        like openpi reusing the prefilled 2B cache across denoise steps."""
+        return getattr(self, "_extra_kv_stash", None)
 
     def _build_mot_attention_mask(
         self,

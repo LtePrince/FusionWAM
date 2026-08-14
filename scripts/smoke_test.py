@@ -58,7 +58,17 @@ def check_fusion_coupling():
     assert all(torch.allclose(e["v"], torch.zeros_like(e["v"])) for e in kv), \
         "V projections must start at zero (silent-start guarantee)"
     assert not torch.allclose(kv[0]["k"], torch.zeros_like(kv[0]["k"]))
-    print("[2] per-layer KV adapter + depth map OK")
+    # Multi-step denoise contract: the stash survives repeated consumption
+    # (openpi-style prefill-once) and clears only explicitly.
+    from fusionwam.models.wam import WAM
+    class _S: pass
+    host = _S()
+    host._extra_kv_stash = kv
+    assert WAM._consume_extra_kv(host) is kv
+    assert WAM._consume_extra_kv(host) is kv, "stash must NOT pop (denoise loop reuse)"
+    host._extra_kv_stash = None
+    assert WAM._consume_extra_kv(host) is None
+    print("[2] per-layer KV adapter + depth map + prefill-reuse contract OK")
 
 
 def check_hydra_targets():
