@@ -1,32 +1,29 @@
-"""Frozen PaliGemma semantic expert -> projected KV tokens for the action DiT.
+"""Frozen PaliGemma semantic expert: full (image + instruction) forward,
+per-layer hidden states out.
 
-Stage 1 contract: the VLM is a frozen feature bank. Its tokens are projected
-into the action expert's `context` space (text_dim) and concatenated after the
-umt5 text tokens with a source segment embedding. Only `proj`, `norm`,
-`segment` (and optional `layerscale`) train.
+The fusion design (openpi-style, generalized to heterogeneous towers): the
+VLM runs its OWN transformer over [image tokens + language instruction];
+every Gemma layer's hidden states are exposed so the action expert can attend
+a depth-mapped KV prefix at each of its layers. Probe evidence
+(2026-08-12): object position lives dose-flat in the early/vision layers and
+decays through the Gemma pass, while instruction binding lives late —
+per-layer access serves both without choosing a single tap.
 
-Weights: google/paligemma-3b-pt-224 by default (scripts/download_weights.sh);
-a pi0.5-finetuned PaliGemma can be swapped in after JAX->HF conversion
-(scripts/convert_pi05_vlm.md) — run the frozen-probe experiment first to see
-whether the base model's features already carry OOD object position.
+Nothing here trains; the K/V adapters live on the fusion side
+(models/fusion.py), mirroring how openpi's experts each project their own
+width into a shared attention-head space.
 """
 
-from typing import Optional, Tuple
+from typing import List, Tuple
 
 import torch
 import torch.nn as nn
 
 
 class FrozenPaliGemmaEncoder(nn.Module):
-    def __init__(
-        self,
-        model_path: str,
-        out_dim: int,
-        dtype: torch.dtype = torch.bfloat16,
-        layerscale_init: Optional[float] = 1e-3,
-    ):
+    def __init__(self, model_path: str, dtype: torch.dtype = torch.bfloat16):
         super().__init__()
-        from transformers import PaliGemmaForConditionalGeneration, AutoProcessor
+        from transformers import AutoProcessor, PaliGemmaForConditionalGeneration
 
         self.processor = AutoProcessor.from_pretrained(model_path)
         self.vlm = PaliGemmaForConditionalGeneration.from_pretrained(
@@ -34,45 +31,27 @@ class FrozenPaliGemmaEncoder(nn.Module):
         )
         self.vlm.requires_grad_(False)
         self.vlm.eval()
-        vlm_dim = self.vlm.config.vision_config.hidden_size
-
-        self.proj = nn.Linear(vlm_dim, out_dim)
-        self.norm = nn.LayerNorm(out_dim)
-        self.segment = nn.Parameter(torch.zeros(1, 1, out_dim))
-        # Per-source LayerScale: the two context sources (umt5, VLM) have
-        # different activation norms; start the VLM contribution small so it
-        # cannot destabilize the pretrained cross-attention early in training.
-        self.layerscale = (
-            nn.Parameter(torch.full((out_dim,), layerscale_init))
-            if layerscale_init is not None
-            else None
-        )
+        self.hidden_dim = self.vlm.config.text_config.hidden_size
+        self.num_layers = self.vlm.config.text_config.num_hidden_layers
 
     @torch.no_grad()
-    def _encode(self, images: torch.Tensor, prompts: list) -> Tuple[torch.Tensor, torch.Tensor]:
-        """images: [B,3,H,W] in [0,1] (RGB); prompts: list[str] of length B.
-        Returns (tokens [B,L,dim], mask [B,L]).
+    def layer_hidden(
+        self, images: torch.Tensor, prompts: list
+    ) -> Tuple[List[torch.Tensor], torch.Tensor]:
+        """images [B,3,H,W] in [0,1]; prompts list[str].
 
-        Feature level: SigLIP vision-tower output, NOT the language model's
-        final hidden states. Probe evidence (L3, 2026-08-12): displaced-object
-        position survives nearly dose-flat in the vision tokens (OOD selection
-        92.5%) but is progressively discarded through the Gemma pass (84.7%,
-        dose-degrading). Injecting final-layer hidden states would graft the
-        worst layer. Language conditioning reaches the action expert via the
-        umt5 text context, so no semantic pathway is lost here.
+        Returns (hidden_states, mask): hidden_states is a list over depth —
+        index 0 = embeddings, 1..L = after each Gemma layer — each
+        [B, S, hidden_dim] over the full multimodal sequence (256 image
+        tokens first, then instruction tokens); mask [B, S] marks real
+        tokens (padding False).
         """
-        pixel_values = self.processor.image_processor(
-            images=[img for img in images], return_tensors="pt", do_rescale=False
-        )["pixel_values"].to(self.vlm.device, dtype=self.vlm.dtype)
-        vision_out = self.vlm.vision_tower(pixel_values)
-        tokens = vision_out.last_hidden_state           # [B, 256, vision_dim]
-        mask = torch.ones(tokens.shape[:2], dtype=torch.bool, device=tokens.device)
-        return tokens, mask
-
-    def forward(self, images: torch.Tensor, prompts: list) -> Tuple[torch.Tensor, torch.Tensor]:
-        hidden, mask = self._encode(images, prompts)
-        tokens = self.norm(self.proj(hidden.to(self.proj.weight.dtype)))
-        if self.layerscale is not None:
-            tokens = tokens * self.layerscale
-        tokens = tokens + self.segment
-        return tokens, mask
+        inputs = self.processor(
+            text=prompts,
+            images=[img for img in images],
+            return_tensors="pt",
+            padding=True,
+        ).to(self.vlm.device)
+        out = self.vlm(**inputs, output_hidden_states=True)
+        mask = inputs["attention_mask"].bool()
+        return list(out.hidden_states), mask

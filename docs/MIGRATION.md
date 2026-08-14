@@ -85,10 +85,11 @@ bash scripts/train_zero1.sh 2 \
 ```
 
 `configs/stage1.yaml` already sets `max_steps=20000`, weights-only saves,
-source dropout p = 0.3/0.3, and LayerScale init 1e-3. Besides the loss, watch
-the VLM-branch LayerScale norm: it should move off 1e-3 within ~2k steps; if
-it does not, the semantic source is not being consumed — stop and check the
-dropout configuration before spending the full budget.
+source dropout p = 0.3/0.3. Besides the loss, watch the VLM adapter's
+V-projection weight norms: they start at exactly zero (silent-start init)
+and should move off zero within ~2k steps; if they stay pinned, the
+semantic source is not being consumed — stop and check the dropout
+configuration before spending the full budget.
 
 ## 6. Acceptance evaluation
 

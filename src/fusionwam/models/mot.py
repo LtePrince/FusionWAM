@@ -361,6 +361,7 @@ class MoT(nn.Module):
         video_kv_cache: list[dict[str, torch.Tensor]],
         attention_mask: torch.Tensor,
         video_seq_len: int,
+        extra_kv: Optional[list] = None,
     ) -> torch.Tensor:
         """Run action branch with cached video K/V instead of recomputing video tokens.
 
@@ -390,14 +391,23 @@ class MoT(nn.Module):
             raise ValueError(f"`attention_mask` must be square, got shape {tuple(attention_mask.shape)}")
 
         action_seq_len = int(action_tokens.shape[1])
+        extra_len = 0
+        if extra_kv is not None:
+            if len(extra_kv) != self.num_layers:
+                raise ValueError(
+                    f"`extra_kv` must have {self.num_layers} layers, got {len(extra_kv)}")
+            extra_len = int(extra_kv[0]["k"].shape[1])
         total_seq_len = int(video_seq_len) + action_seq_len
         if attention_mask.shape[0] != total_seq_len:
             raise ValueError(
                 "`attention_mask` seq length mismatch: "
-                f"mask={attention_mask.shape[0]} vs expected_total={total_seq_len}"
-            )
-        # Use the action query rows from the joint [video+action] mask.
-        action_attention_mask = attention_mask[video_seq_len:total_seq_len, :total_seq_len]
+                f"mask={attention_mask.shape[0]} vs expected_total={total_seq_len}")
+        if attention_mask.shape[1] != extra_len + total_seq_len:
+            raise ValueError(
+                f"`attention_mask` must be [S_q, extra+S_q]; got {tuple(attention_mask.shape)} "
+                f"with extra_len={extra_len}")
+        # Action query rows; key columns span [extra + video + action].
+        action_attention_mask = attention_mask[video_seq_len:total_seq_len, :]
 
         expert = self.mixtures["action"]
         x = action_tokens
@@ -429,6 +439,9 @@ class MoT(nn.Module):
 
             k_video = layer_cache["k"]
             v_video = layer_cache["v"]
+            if extra_kv is not None:
+                k_video = torch.cat([extra_kv[layer_idx]["k"].to(k_video.dtype), k_video], dim=1)
+                v_video = torch.cat([extra_kv[layer_idx]["v"].to(v_video.dtype), v_video], dim=1)
             if k_video.shape[1] != video_seq_len or v_video.shape[1] != video_seq_len:
                 raise ValueError(
                     f"`video_kv_cache[{layer_idx}]` seq len mismatch, expected {video_seq_len}."
@@ -463,7 +476,12 @@ class MoT(nn.Module):
         freqs_all: Dict[str, torch.Tensor],
         context_all: Dict[str, Optional[dict]],
         t_mod_all: Dict[str, torch.Tensor],
+        extra_kv: Optional[list] = None,
     ):
+        """`extra_kv`: optional per-layer KV-only prefix (len == num_layers,
+        entries {"k","v"} of [B, Se, H*Dh]) prepended to every layer's keys and
+        values. Prefix tokens contribute NO queries; with it the attention
+        mask is rectangular [S_q, Se + S_q] instead of square."""
         missing = [k for k in self.expert_order if k not in embeds_all]
         if missing:
             raise ValueError(f"Missing expert tokens for {missing}")
@@ -475,9 +493,17 @@ class MoT(nn.Module):
             raise ValueError(f"Missing expert t_mod for {missing}")
 
         if attention_mask.ndim != 2:
-            raise ValueError(f"`attention_mask` must be 2D [S, S], got shape {tuple(attention_mask.shape)}")
-        if attention_mask.shape[0] != attention_mask.shape[1]:
-            raise ValueError(f"`attention_mask` must be square, got shape {tuple(attention_mask.shape)}")
+            raise ValueError(f"`attention_mask` must be 2D, got shape {tuple(attention_mask.shape)}")
+        extra_len = 0
+        if extra_kv is not None:
+            if len(extra_kv) != self.num_layers:
+                raise ValueError(
+                    f"`extra_kv` must have {self.num_layers} layers, got {len(extra_kv)}")
+            extra_len = int(extra_kv[0]["k"].shape[1])
+        if attention_mask.shape[1] != attention_mask.shape[0] + extra_len:
+            raise ValueError(
+                f"`attention_mask` must be [S_q, extra+S_q]; got {tuple(attention_mask.shape)} "
+                f"with extra_len={extra_len}")
 
         tokens_all = {k: v for k, v in embeds_all.items()}
 
@@ -529,6 +555,9 @@ class MoT(nn.Module):
 
             # 3. concat all tokens for mixed attention
             q_cat = torch.cat(q_chunks, dim=1)
+            if extra_kv is not None:
+                k_chunks = [extra_kv[layer_idx]["k"].to(k_chunks[0].dtype)] + k_chunks
+                v_chunks = [extra_kv[layer_idx]["v"].to(v_chunks[0].dtype)] + v_chunks
             k_cat = torch.cat(k_chunks, dim=1)
             v_cat = torch.cat(v_chunks, dim=1)
 

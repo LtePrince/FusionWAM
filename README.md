@@ -49,16 +49,19 @@ PaliGemma VLM (3B, frozen in stage 1) ──semantic KV──┐
 Wan2.2 video DiT (5B, WAM weights) ──dynamics KV─┘     Q attends [VLM ⊕ video ⊕ action]
 ```
 
-- **Stage 1 (this package's default).** Minimal-surgery fusion: the
-  video↔action coupling remains exactly WAM's MoT joint attention; the
-  VLM enters as additional projected tokens in the action expert's
-  cross-attention `context`, behind a LayerScale initialized near zero.
-  Both backbones are frozen; trainable parameters are the action expert and
-  the VLM adapter (projection, norm, segment embedding, LayerScale).
-- **Stage 2 (large-machine option).** Full tri-segment MoT
-  (`build_tri_mot_attention_mask`): the video expert also reads the VLM,
-  replacing umt5 conditioning; unfreezing requires a web-scale
-  vision-language co-training mix (§5.4).
+- **Stage 1 (this package's default).** Per-layer KV coupling (openpi's
+  mechanism, generalized to heterogeneous towers): the frozen VLM runs its
+  own forward over [image + instruction]; each MoT layer i attends a KV
+  prefix computed from the depth-mapped Gemma layer g(i) by a trainable
+  per-layer adapter (V zero-initialized: silent start). The action expert
+  reads the VLM's whole depth — early layers carry displaced-object
+  position dose-flat, late layers carry instruction binding (probe verdict
+  2026-08-12) — so no single-layer tap has to be chosen. Video rows never
+  attend the VLM prefix (the frozen video tower keeps its training
+  distribution). Trainable: action expert + the KV adapter.
+- **Stage 2 (large-machine option).** Open the video->VLM attention rows
+  (semantics condition dynamics, replacing umt5) and optionally unfreeze
+  the VLM with a web-scale vision-language co-training mix (§5.4).
 
 ### Design rules derived from campaign evidence (do not remove)
 
@@ -174,7 +177,7 @@ Pre-registered decision rule for stage 1 at the 10 cm cell:
 |---|---|---|
 | ≥ 60% | VLM source genuinely consumed | proceed to stage 2 |
 | 45–60% | partial consumption | attention-entropy diagnosis before scaling |
-| ≤ 45% | fusion ineffective (best 6B-LoRA baseline: 46.7%) | verify source dropout is active and LayerScale has moved off its initialization |
+| ≤ 45% | fusion ineffective (best 6B-LoRA baseline: 46.7%) | verify source dropout is active and the adapter V-projection norms have moved off zero |
 
 Reference anchors on the same protocol: WAM base 20% @10 cm; best
 6B-LoRA variant 46.7%; π0.5 73.3%; enumerated-core upper bound (ground-truth
@@ -186,8 +189,8 @@ anchors) 93.3% = 100% of the feasibility ceiling.
   validate first are the hydra composition in `train.py` and the
   `training_loss` override path in `models/fusion.py`.
 - Attention-scale balance between the two KV sources is handled only by the
-  VLM-branch LayerScale; if the VLM slice's attention mass stays ≈ 0 after
-  warm-up, raise `vlm_layerscale_init`.
+  the adapter V-projection norms: they start at exactly zero and must move
+  off it within the first ~2k steps for the prefix to contribute.
 - Cross-segment relative position is undefined by construction (per-source
   positional encodings); action-to-source attention is content-addressed.
   This is a deliberate choice, not an oversight.

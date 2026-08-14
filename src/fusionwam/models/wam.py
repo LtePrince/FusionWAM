@@ -419,6 +419,13 @@ class WAM(torch.nn.Module):
         }
 
     @torch.no_grad()
+    def _consume_extra_kv(self):
+        """Per-forward KV prefix stash; FusionWAM fills it in training_loss/
+        infer paths, base WAM has none. Popped so it never leaks across calls."""
+        stash = getattr(self, "_extra_kv_stash", None)
+        self._extra_kv_stash = None
+        return stash
+
     def _build_mot_attention_mask(
         self,
         video_seq_len: int,
@@ -543,6 +550,7 @@ class WAM(torch.nn.Module):
                 "action": action_tokens,
             },
             attention_mask=attention_mask,
+            extra_kv=self._consume_extra_kv(),
             freqs_all={
                 "video": video_pre["freqs"],
                 "action": action_pre["freqs"],
@@ -643,6 +651,7 @@ class WAM(torch.nn.Module):
                 "action": action_pre["tokens"],
             },
             attention_mask=attention_mask,
+            extra_kv=self._consume_extra_kv(),
             freqs_all={
                 "video": video_pre["freqs"],
                 "action": action_pre["freqs"],
@@ -705,6 +714,7 @@ class WAM(torch.nn.Module):
                 "action": action_pre["tokens"],
             },
             attention_mask=attention_mask,
+            extra_kv=self._consume_extra_kv(),
             freqs_all={
                 "video": video_pre["freqs"],
                 "action": action_pre["freqs"],
@@ -754,6 +764,7 @@ class WAM(torch.nn.Module):
             },
             video_kv_cache=video_kv_cache,
             attention_mask=attention_mask,
+            extra_kv=self._consume_extra_kv(),
             video_seq_len=video_seq_len,
         )
         return self.action_expert.post_dit(action_tokens, action_pre)
@@ -1073,6 +1084,7 @@ class WAM(torch.nn.Module):
                 context_mask=context_mask,
                 video_kv_cache=video_kv_cache,
                 attention_mask=attention_mask,
+            extra_kv=self._consume_extra_kv(),
                 video_seq_len=video_seq_len,
             )
             pred_action = pred_action_posi

@@ -2,7 +2,8 @@
 
 Checks, in order (each isolates one class of porting failure):
   1. package imports resolve (torch and the full fusionwam tree)
-  2. tri-MoT mask: block structure and source dropout exactly match the spec
+  2. per-layer KV coupling: depth map monotone/covering, adapter shapes,
+     zero-V silent start
   3. hydra: configs/ composes and every _target_ resolves to an importable
      object (no model construction)
   4. [weights] transformers loads PaliGemma; one dummy image+prompt through
@@ -45,18 +46,19 @@ def check_package_imports():
     print("[1] full package import OK")
 
 
-def check_masks():
-    from fusionwam.models.fusion import build_tri_mot_attention_mask
-    v2v = torch.ones(6, 6, dtype=torch.bool)
-    m = build_tri_mot_attention_mask(4, 6, 3, v2v, torch.device("cpu"))
-    assert m.shape == (13, 13)
-    assert m[10:, :4].all() and m[10:, 4:10].all() and m[10:, 10:].all()
-    assert m[:4, 4:].logical_not().all(), "VLM must not see video/action"
-    assert m[4:10, :4].all(), "video must see VLM (stage-2 path)"
-    m2 = build_tri_mot_attention_mask(4, 6, 3, v2v, torch.device("cpu"),
-                                      drop_action_to_video=True)
-    assert m2[10:, 4:10].logical_not().all(), "video-drop must zero the block"
-    print("[2] tri-MoT mask structure OK")
+def check_fusion_coupling():
+    from fusionwam.models.fusion import VLMKVAdapter, uniform_layer_map
+    lmap = uniform_layer_map(30, 18)
+    assert len(lmap) == 30 and lmap[0] == 1 and lmap[-1] == 18
+    assert all(b >= a for a, b in zip(lmap, lmap[1:])), "layer map must be monotone"
+    ad = VLMKVAdapter(vlm_dim=32, inner_dim=24, layer_map=uniform_layer_map(4, 6))
+    hiddens = [torch.randn(2, 7, 32) for _ in range(7)]  # emb + 6 layers
+    kv = ad(hiddens)
+    assert len(kv) == 4 and kv[0]["k"].shape == (2, 7, 24)
+    assert all(torch.allclose(e["v"], torch.zeros_like(e["v"])) for e in kv), \
+        "V projections must start at zero (silent-start guarantee)"
+    assert not torch.allclose(kv[0]["k"], torch.zeros_like(kv[0]["k"]))
+    print("[2] per-layer KV adapter + depth map OK")
 
 
 def check_hydra_targets():
@@ -109,7 +111,7 @@ def main():
     args = ap.parse_args()
 
     check_package_imports()
-    check_masks()
+    check_fusion_coupling()
     check_hydra_targets()
     if not args.no_weights:
         check_vlm(args.config)

@@ -446,7 +446,6 @@ def create_fusion_model(
     vlm_path: str | None = None,
     p_drop_vlm: float = 0.3,
     p_drop_video: float = 0.3,
-    vlm_layerscale_init: float = 1e-3,
     **wam_joint_kwargs,
 ):
     """FusionWAM factory: identical contract to create_wam_joint plus the
@@ -458,6 +457,9 @@ def create_fusion_model(
     model.p_drop_vlm = float(p_drop_vlm)
     model.p_drop_video = float(p_drop_video)
     model.vlm_encoder = None
+    model.vlm_adapter = None
+    model._extra_len = 0
+    model._extra_kv_stash = None
     if vlm_path:
-        model.attach_vlm(vlm_path, layerscale_init=vlm_layerscale_init)
+        model.attach_vlm(vlm_path)
     return model

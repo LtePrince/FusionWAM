@@ -10,7 +10,6 @@ fusion:
   vlm_path: ./checkpoints/paligemma-3b-pt-224
   p_drop_vlm: 0.3          # source dropout: action must survive without VLM
   p_drop_video: 0.3        # ...and without video KV (Gate-1/B2 lesson)
-  vlm_layerscale_init: 1.0e-3
 
 train:
   max_steps: 20000
