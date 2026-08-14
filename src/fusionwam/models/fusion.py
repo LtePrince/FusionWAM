@@ -141,6 +141,59 @@ class FusionWAM(WAMJoint):
             sample["context_mask"] = fused_mask
         return super().training_loss(sample)
 
+    # ---------------------------------------------------------- checkpointing
+    _ADAPTER_KEYS = ("proj", "norm", "segment", "layerscale")
+
+    def _adapter_state(self):
+        """Trainable fusion-adapter params only (the frozen 3B VLM reloads
+        from its published weights; persisting it would bloat every step
+        checkpoint by ~6G for bytes we never change)."""
+        if self.vlm_encoder is None:
+            return None
+        full = self.vlm_encoder.state_dict()
+        return {k: v for k, v in full.items() if not k.startswith("vlm.")}
+
+    def save_checkpoint(self, path, optimizer=None, step=None):
+        # Upstream WAM.save_checkpoint persists only mot+proprio_encoder;
+        # without this override the trained fusion adapter is silently
+        # dropped from every checkpoint (third bug of this class, after the
+        # freeze-mode and save-gate ones - all found by reading, not running).
+        import torch as _torch
+
+        payload = {
+            "mot": self.mot.state_dict(),
+            "step": step,
+            "torch_dtype": str(self.torch_dtype),
+        }
+        if self.proprio_encoder is not None:
+            payload["proprio_encoder"] = self.proprio_encoder.state_dict()
+        adapter = self._adapter_state()
+        if adapter is not None:
+            payload["vlm_adapter"] = adapter
+            payload["vlm_adapter_meta"] = {
+                "p_drop_vlm": float(self.p_drop_vlm),
+                "p_drop_video": float(self.p_drop_video),
+            }
+        if optimizer is not None:
+            payload["optimizer"] = optimizer.state_dict()
+        _torch.save(payload, path)
+
+    def load_checkpoint(self, path, optimizer=None):
+        import torch as _torch
+
+        super().load_checkpoint(path, optimizer=optimizer)
+        payload = _torch.load(path, map_location="cpu", weights_only=False)
+        if "vlm_adapter" in payload:
+            if self.vlm_encoder is None:
+                raise ValueError(
+                    "Checkpoint carries a fusion adapter but no VLM is "
+                    "attached; construct the model with vlm_path set.")
+            missing, unexpected = self.vlm_encoder.load_state_dict(
+                payload["vlm_adapter"], strict=False)
+            unexpected = [k for k in unexpected if not k.startswith("vlm.")]
+            if unexpected:
+                raise ValueError(f"Unexpected adapter keys: {unexpected}")
+
     @torch.no_grad()
     def _build_mot_attention_mask(
         self,
