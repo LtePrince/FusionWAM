@@ -38,7 +38,7 @@ def main():
         cfg = compose(config_name="train", overrides=list(args.overrides))
 
     OmegaConf.set_struct(cfg, False)
-    cfg.model._target_ = "fusionwam.models.fusion.FusionWAM.from_wan22_pretrained"
+    cfg.model._target_ = "fusionwam.training.runtime.create_fusion_model"
     for k, v in fusion_cfg.get("fusion", {}).items():
         cfg.model[k] = v
     for k, v in fusion_cfg.get("train", {}).items():
