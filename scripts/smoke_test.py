@@ -106,11 +106,24 @@ def check_hydra_targets():
 def check_vlm(config_path: str):
     import yaml
     cfg = yaml.safe_load(open(REPO / config_path))
+    from fusionwam.models.fusion import VLMKVAdapter, uniform_layer_map
     from fusionwam.models.paligemma import FrozenPaliGemmaEncoder
-    enc = FrozenPaliGemmaEncoder(cfg["fusion"]["vlm_path"], out_dim=1024)
-    toks, mask = enc(torch.rand(1, 3, 224, 224), ["pick up the alphabet soup"])
-    assert torch.isfinite(toks).all() and mask.any()
-    print(f"[4] VLM adapter OK: {tuple(toks.shape)} tokens")
+
+    enc = FrozenPaliGemmaEncoder(cfg["fusion"]["vlm_path"])
+    hiddens, mask = enc.layer_hidden(
+        torch.rand(1, 3, 224, 224), ["pick up the alphabet soup"])
+    assert mask.any() and all(torch.isfinite(h).all() for h in hiddens)
+
+    # One adapter forward, mirroring FusionWAM._build_vlm_prefix. MoT geometry
+    # per configs/model/wam_joint.yaml: 24 heads x 128 head_dim, 30 DiT blocks.
+    adapter = VLMKVAdapter(enc.hidden_dim, 24 * 128,
+                           uniform_layer_map(30, enc.num_layers))
+    kv = adapter([h * mask.unsqueeze(-1) for h in hiddens])
+    assert all(torch.isfinite(p["k"]).all() for p in kv)
+    assert all((p["v"] == 0).all() for p in kv)  # silent start: V zero-init
+    print(f"[4] VLM load + adapter forward OK: prefix len "
+          f"{int(hiddens[0].shape[1])}, {len(kv)} MoT layers mapped "
+          f"over {enc.num_layers} Gemma layers")
 
 
 def main():
