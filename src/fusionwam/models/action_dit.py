@@ -131,7 +131,10 @@ class ActionDiT(nn.Module):
         from pathlib import Path
         p = Path(action_dit_pretrained_path)
         if not p.is_absolute():
-            p = Path(__file__).resolve().parents[4] / p
+            # CWD first (the convention for every other relative path in the
+            # stack), then the repo root for launches from other directories.
+            candidates = [Path.cwd() / p, Path(__file__).resolve().parents[3] / p]
+            p = next((c for c in candidates if c.is_file()), candidates[0])
         action_dit_pretrained_path = str(p)
         if not os.path.isfile(action_dit_pretrained_path):
             raise FileNotFoundError(
