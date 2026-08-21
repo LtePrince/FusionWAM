@@ -18,6 +18,11 @@ train:
   # transient window (2026-08-09 disk incident). Enable full state only on
   # machines with >30G free on the checkpoint volume.
   save_full_state: false
+  # Persist only what stage 1 trains (action expert + VLM adapter + proprio,
+  # ~3G/save instead of ~13G with the frozen 5B video tower baked in).
+  save_trainable_only: true
+  # Delete all but the newest N step_*.pt after each save; 0 keeps everything.
+  keep_last_weights: 5
 
 # Acceptance evaluation (not consumed by train.py — protocol contract):
 #   dose displacement scan {0,4,7,10,15}cm, n=30/cell, zero-dose control,

@@ -178,15 +178,16 @@ class FusionWAM(WAMJoint):
         return mask
 
     # ---------------------------------------------------------- checkpointing
-    def save_checkpoint(self, path, optimizer=None, step=None):
+    def save_checkpoint(self, path, optimizer=None, step=None, trainable_only=False):
         # Upstream WAM.save_checkpoint persists only mot+proprio_encoder;
         # without this override the trained adapter is silently dropped from
         # every checkpoint. The frozen VLM is excluded (reloads from its
         # published weights; persisting it would add ~6G per step).
         payload = {
-            "mot": self.mot.state_dict(),
+            "mot": self._mot_state_dict(trainable_only),
             "step": step,
             "torch_dtype": str(self.torch_dtype),
+            "trainable_only": bool(trainable_only),
         }
         if self.proprio_encoder is not None:
             payload["proprio_encoder"] = self.proprio_encoder.state_dict()

@@ -109,6 +109,29 @@ fusion before scaling).
 
 ## 7. Disk discipline
 
-Weights-only checkpointing is pre-configured (`save_full_state: false`).
+Stage-1 checkpointing defaults are lean: `save_full_state: false`,
+`save_trainable_only: true` (~3 G per step_*.pt instead of ~13 G — the
+frozen towers reload from their published weights), `keep_last_weights: 5`
+(older step_*.pt are deleted after each successful save; 0 keeps all).
 Before enabling full trainer-state saves, verify >30 G headroom on the
 checkpoint volume: state rotation needs a 2×13 G transient window.
+
+Quota-limited home directory (e.g. ~100 G): keep the repo + venv on home
+and symlink the three bulky directories to a data disk BEFORE downloading
+anything — every path in the configs is repo-relative and resolves through
+them:
+
+```bash
+STORE=/path/to/datadisk/fusionwam        # adjust to your mount
+mkdir -p "$STORE"/{checkpoints,data,runs}
+cd ~/FusionWAM
+for d in checkpoints data runs; do
+  if [ -d "$d" ] && [ ! -L "$d" ]; then
+    mv "$d"/* "$STORE/$d"/ 2>/dev/null; rmdir "$d"
+  fi
+  [ -e "$d" ] || ln -s "$STORE/$d" "$d"
+done
+```
+
+Optionally also export `HF_HOME` / `MODELSCOPE_CACHE` to the data disk;
+the download scripts write into the repo tree, so those caches stay small.

@@ -1133,11 +1133,25 @@ class WAM(torch.nn.Module):
             tiled=tiled,
         )
 
-    def save_checkpoint(self, path, optimizer=None, step=None):
+    def _mot_state_dict(self, trainable_only: bool):
+        """Full MoT state, or only trainable parameters plus all buffers.
+        Frozen towers reload from their published weights at construction, so
+        persisting them just multiplies checkpoint size; buffers are kept
+        (tiny) so deterministic init-time tables survive the round trip.
+        load_checkpoint already uses strict=False, so partial dicts load."""
+        sd = self.mot.state_dict()
+        if not trainable_only:
+            return sd
+        keep = {n for n, p in self.mot.named_parameters() if p.requires_grad}
+        keep.update(n for n, _ in self.mot.named_buffers())
+        return {k: v for k, v in sd.items() if k in keep}
+
+    def save_checkpoint(self, path, optimizer=None, step=None, trainable_only=False):
         payload = {
-            "mot": self.mot.state_dict(),
+            "mot": self._mot_state_dict(trainable_only),
             "step": step,
             "torch_dtype": str(self.torch_dtype),
+            "trainable_only": bool(trainable_only),
         }
         if self.proprio_encoder is not None:
             payload["proprio_encoder"] = self.proprio_encoder.state_dict()

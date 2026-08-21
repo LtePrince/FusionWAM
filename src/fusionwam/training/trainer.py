@@ -41,6 +41,8 @@ class Wan22Trainer:
         self.max_steps = int(max_steps) if max_steps is not None else None
         self.log_every = int(cfg.log_every)
         self.save_every = int(cfg.save_every)
+        self.keep_last_weights = int(cfg.get("keep_last_weights", 0) or 0)
+        self.save_trainable_only = bool(cfg.get("save_trainable_only", False))
         self.eval_every = int(cfg.eval_every)
         self.eval_num_inference_steps = int(cfg.eval_num_inference_steps)
         self.gradient_accumulation_steps = int(cfg.gradient_accumulation_steps)
@@ -82,10 +84,7 @@ class Wan22Trainer:
         # Freeze non-trainable modules before optimizer/deepspeed initialization.
         # This keeps DiT (+ optional proprio encoder) as trainable when ZeRO builds optimizer state.
         self._apply_dit_only_train_mode(self.model)
-        trainable_params = list(self.model.dit.parameters())
-        proprio_encoder = getattr(self.model, "proprio_encoder", None)
-        if proprio_encoder is not None:
-            trainable_params.extend(list(proprio_encoder.parameters()))
+        trainable_params = self._collect_trainable_params(self.model)
         self.optimizer = torch.optim.AdamW(
             trainable_params,
             lr=self.learning_rate,
@@ -293,6 +292,17 @@ class Wan22Trainer:
         if proprio_encoder is not None:
             proprio_encoder.train()
             proprio_encoder.requires_grad_(True)
+
+    @staticmethod
+    def _collect_trainable_params(model):
+        """Parameters handed to the optimizer. Must mirror
+        _apply_dit_only_train_mode: every module re-enabled there has to be
+        listed here too, or it receives gradients but never updates."""
+        params = list(model.dit.parameters())
+        proprio_encoder = getattr(model, "proprio_encoder", None)
+        if proprio_encoder is not None:
+            params.extend(proprio_encoder.parameters())
+        return params
 
     @staticmethod
     def _to_batched_eval_sample(sample):
@@ -567,8 +577,31 @@ class Wan22Trainer:
     def _save_weights_checkpoint(self, step_tag: str):
         model = self.accelerator.unwrap_model(self.model)
         ckpt_path = os.path.join(self.weights_dir, f"{step_tag}.pt")
-        model.save_checkpoint(ckpt_path, optimizer=None, step=self.global_step)
+        model.save_checkpoint(ckpt_path, optimizer=None, step=self.global_step,
+                              trainable_only=self.save_trainable_only)
         return ckpt_path
+
+    _WEIGHTS_CKPT_RE = re.compile(r"^step_(\d+)\.pt$")
+
+    def _rotate_weights_checkpoints(self):
+        """Delete all but the newest `keep_last_weights` step_*.pt files.
+        0 (the default) keeps everything. Runs after a successful save, so a
+        crash mid-save never leaves fewer checkpoints than configured."""
+        if self.keep_last_weights <= 0:
+            return
+        entries = sorted(
+            (int(m.group(1)), name)
+            for name in os.listdir(self.weights_dir)
+            if (m := self._WEIGHTS_CKPT_RE.match(name))
+        )
+        for _, name in entries[:-self.keep_last_weights]:
+            path = os.path.join(self.weights_dir, name)
+            try:
+                os.remove(path)
+                logger.info("Rotated out weights checkpoint %s (keep_last_weights=%d)",
+                            name, self.keep_last_weights)
+            except OSError as exc:
+                logger.warning("Could not remove old checkpoint %s: %s", path, exc)
 
     def _save_trainer_state(self, state_path: str):
         state_file = os.path.join(state_path, "trainer_state.json")
@@ -587,6 +620,7 @@ class Wan22Trainer:
         ckpt_path = None
         if self.accelerator.is_main_process:
             ckpt_path = self._save_weights_checkpoint(step_tag=step_tag)
+            self._rotate_weights_checkpoints()
         self.accelerator.wait_for_everyone()
 
         # Full accelerate states are ~13G each and the rotation transient is
