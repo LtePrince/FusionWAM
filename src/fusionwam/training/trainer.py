@@ -579,8 +579,19 @@ class Wan22Trainer:
     def _save_weights_checkpoint(self, step_tag: str):
         model = self.accelerator.unwrap_model(self.model)
         ckpt_path = os.path.join(self.weights_dir, f"{step_tag}.pt")
-        model.save_checkpoint(ckpt_path, optimizer=None, step=self.global_step,
-                              trainable_only=self.save_trainable_only)
+        # Write-then-rename: a failed write (disk full, crash) must never
+        # leave a truncated step_*.pt that rotation would count as valid.
+        tmp_path = ckpt_path + ".tmp"
+        try:
+            model.save_checkpoint(tmp_path, optimizer=None, step=self.global_step,
+                                  trainable_only=self.save_trainable_only)
+            os.replace(tmp_path, ckpt_path)
+        except BaseException:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
         return ckpt_path
 
     _WEIGHTS_CKPT_RE = re.compile(r"^step_(\d+)\.pt$")
