@@ -1,6 +1,7 @@
 from typing import Literal, Dict, Annotated, Union, Any, List, Tuple, Optional
 import torch
 import json
+import os
 from collections import defaultdict
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
@@ -147,7 +148,10 @@ def save_dataset_stats_to_json(dataset_stats: dict, file_path: str):
             return str(obj)
     
     serializable_stats = convert_tensor(dataset_stats)
-    
+
+    parent = os.path.dirname(file_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(serializable_stats, f, ensure_ascii=False, indent=2)
 

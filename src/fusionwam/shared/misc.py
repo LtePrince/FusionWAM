@@ -36,7 +36,8 @@ _DEFAULT_WORK_DIR = "./runs/"
 def register_work_dir(path: str | os.PathLike | None) -> None:
     global _WORK_DIR
     _WORK_DIR = str(path) if path is not None else None
-    os.makedirs(path, exist_ok=True)
+    if path is not None:
+        os.makedirs(path, exist_ok=True)
 
 
 def get_work_dir() -> str | None:

@@ -48,6 +48,12 @@ def main():
         if k not in cli_keys:
             cfg[k] = v
 
+    from fusionwam.shared import misc  # noqa: E402
+
+    # Anchor the work dir (dataset_stats.json etc.) to this run's output_dir;
+    # without this, get_work_dir() falls back to ./runs/ relative to the CWD.
+    misc.register_work_dir(cfg.output_dir)
+
     from fusionwam.training.runtime import (  # noqa: E402
         _mixed_precision_to_model_dtype,
         _normalize_mixed_precision,
