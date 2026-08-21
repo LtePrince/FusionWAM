@@ -41,8 +41,12 @@ def main():
     cfg.model._target_ = "fusionwam.training.runtime.create_fusion_model"
     for k, v in fusion_cfg.get("fusion", {}).items():
         cfg.model[k] = v
+    # stage1 train keys are defaults only — an explicit CLI override wins
+    # (the contract documented in configs/stage1.yaml).
+    cli_keys = {o.split("=", 1)[0].lstrip("+~") for o in args.overrides if "=" in o}
     for k, v in fusion_cfg.get("train", {}).items():
-        cfg[k] = v
+        if k not in cli_keys:
+            cfg[k] = v
 
     from fusionwam.training.runtime import (  # noqa: E402
         _mixed_precision_to_model_dtype,

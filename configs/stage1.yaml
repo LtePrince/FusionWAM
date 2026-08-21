@@ -22,7 +22,8 @@ train:
   # ~3G/save instead of ~13G with the frozen 5B video tower baked in).
   save_trainable_only: true
   # Delete all but the newest N step_*.pt after each save; 0 keeps everything.
-  keep_last_weights: 5
+  # 2 (~6G) fits a quota-limited home dir; raise freely on large volumes.
+  keep_last_weights: 2
 
 # Acceptance evaluation (not consumed by train.py — protocol contract):
 #   dose displacement scan {0,4,7,10,15}cm, n=30/cell, zero-dose control,
