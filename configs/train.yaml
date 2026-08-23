@@ -21,8 +21,10 @@ max_steps: null
 log_every: 10
 save_every: 100
 # checkpoint hygiene (stage1.yaml overrides these for fusion training)
+save_full_state: true       # also save resumable accelerate state dirs
 save_trainable_only: false  # true: persist trainable params + buffers only
 keep_last_weights: 0        # >0: keep only the newest N step_*.pt
+keep_last_states: 0         # >0: keep only the newest N full-state dirs
 eval_every: 50
 eval_num_inference_steps: 10
 

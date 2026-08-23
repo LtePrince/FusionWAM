@@ -23,7 +23,17 @@ import torch.nn as nn
 class FrozenPaliGemmaEncoder(nn.Module):
     def __init__(self, model_path: str, dtype: torch.dtype = torch.bfloat16):
         super().__init__()
+        import logging as std_logging
+
         from transformers import AutoProcessor, PaliGemmaForConditionalGeneration
+
+        # The processor logs "You are passing both `text` and `images` ..."
+        # on EVERY call (auto-prepending <image> tokens is exactly the
+        # behavior we rely on); one line per VLM forward drowns the trainer's
+        # [train] progress lines. Silence just that module's logger.
+        std_logging.getLogger(
+            "transformers.models.paligemma.processing_paligemma"
+        ).setLevel(std_logging.ERROR)
 
         self.processor = AutoProcessor.from_pretrained(model_path)
         self.vlm = PaliGemmaForConditionalGeneration.from_pretrained(

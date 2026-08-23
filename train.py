@@ -12,8 +12,13 @@ Multi-GPU:
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
+
+# Dataloader workers fork after the tokenizer has run; silence the
+# huggingface/tokenizers fork warning by pinning the documented default.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 import yaml
 from hydra import compose, initialize_config_dir

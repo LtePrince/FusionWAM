@@ -24,6 +24,9 @@ train:
   # Delete all but the newest N step_*.pt after each save; 0 keeps everything.
   # 2 (~6G) fits a quota-limited home dir; raise freely on large volumes.
   keep_last_weights: 2
+  # Full-state dirs (~40G each) rotate too — only written when
+  # save_full_state=true; run those on a large volume (MIGRATION §7).
+  keep_last_states: 2
 
 # Acceptance evaluation (not consumed by train.py — protocol contract):
 #   dose displacement scan {0,4,7,10,15}cm, n=30/cell, zero-dose control,

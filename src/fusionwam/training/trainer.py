@@ -2,6 +2,7 @@ import logging
 import json
 import inspect
 import os
+import shutil
 import re
 from math import ceil
 from pathlib import Path
@@ -42,6 +43,7 @@ class Wan22Trainer:
         self.log_every = int(cfg.log_every)
         self.save_every = int(cfg.save_every)
         self.keep_last_weights = int(cfg.get("keep_last_weights", 0) or 0)
+        self.keep_last_states = int(cfg.get("keep_last_states", 0) or 0)
         self.save_trainable_only = bool(cfg.get("save_trainable_only", False))
         self.eval_every = int(cfg.eval_every)
         self.eval_num_inference_steps = int(cfg.eval_num_inference_steps)
@@ -648,8 +650,32 @@ class Wan22Trainer:
         if self.accelerator.is_main_process:
             self._save_trainer_state(state_path)
         self.accelerator.wait_for_everyone()
+        if self.accelerator.is_main_process:
+            self._rotate_state_checkpoints()
 
         return {"weights_path": ckpt_path, "state_path": state_path}
+
+    _STATE_CKPT_RE = re.compile(r"^step_(\d+)$")
+
+    def _rotate_state_checkpoints(self):
+        """Keep the newest `keep_last_states` full-state dirs; 0 keeps all.
+        Runs after a successful save_state, behind the collective barrier."""
+        if self.keep_last_states <= 0:
+            return
+        entries = sorted(
+            (int(m.group(1)), name)
+            for name in os.listdir(self.state_dir)
+            if (m := self._STATE_CKPT_RE.match(name))
+            and os.path.isdir(os.path.join(self.state_dir, name))
+        )
+        for _, name in entries[:-self.keep_last_states]:
+            path = os.path.join(self.state_dir, name)
+            try:
+                shutil.rmtree(path)
+                logger.info("Rotated out training state %s (keep_last_states=%d)",
+                            name, self.keep_last_states)
+            except OSError as exc:
+                logger.warning("Could not remove old training state %s: %s", path, exc)
 
     def load_training_state(self, state_dir: str):
         self.accelerator.load_state(input_dir=state_dir)
