@@ -65,7 +65,19 @@ class Wan22Trainer:
             mixed_precision=self.mixed_precision,
             step_scheduler_with_optimizer=False,
         )
-        
+
+        # Without this, the root logger has no handler: WARNING+ leaks through
+        # Python's last-resort handler while every INFO line — including the
+        # [train] progress rows — is silently dropped. Mirror to a file so the
+        # run keeps its own record regardless of how stdout is captured.
+        ensure_dir(self.output_dir)
+        setup_logging(is_main_process=self.accelerator.is_main_process)
+        if self.accelerator.is_main_process:
+            file_handler = logging.FileHandler(os.path.join(self.output_dir, "train.log"))
+            file_handler.setFormatter(
+                logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+            logging.getLogger().addHandler(file_handler)
+
         ds_plugin = getattr(self.accelerator.state, "deepspeed_plugin", None)
         logger.info(
             "Accelerate training: distributed_type=%s zero_stage=%s world_size=%d process_index=%d cfg_mixed_precision=%s accelerator_mixed_precision=%s grad_accum=%d grad_clip=%.4f",

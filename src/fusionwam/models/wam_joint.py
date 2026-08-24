@@ -68,10 +68,13 @@ class WAMJoint(WAM):
         tiled: bool = False,
         test_action_with_infer_action: bool = True,
     ) -> dict[str, Any]:
-        if test_action_with_infer_action:
+        if test_action_with_infer_action and not getattr(
+                WAMJoint, "_warned_infer_action_kwarg", False):
+            WAMJoint._warned_infer_action_kwarg = True
             logger.warning(
                 "`WAMJoint.infer_joint` ignores `test_action_with_infer_action=True` "
-                "and always runs with `test_action_with_infer_action=False`."
+                "and always runs with `test_action_with_infer_action=False`. "
+                "(warned once; applies to every call)"
             )
         return super().infer_joint(
             prompt=prompt,
