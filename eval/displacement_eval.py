@@ -41,26 +41,43 @@ def load_model_and_processor(ckpt: str):
     from hydra.utils import instantiate
     import eval_libero_single as els
 
+    import yaml
+    from omegaconf import OmegaConf
+
+    # Build the model exactly the way train.py does for stage 1: the JOINT
+    # task (WAMJoint mask geometry the checkpoint was trained with), the
+    # FusionWAM factory, and the fusion block (vlm_path) from stage1.yaml.
     overrides = [
-        "task=libero_uncond_2cam224_1e-4",
+        "task=libero_joint_2cam224_1e-4",
         f"ckpt={ckpt}",
-        "EVALUATION.dataset_stats_path=./checkpoints/wam_release/libero_uncond_2cam224_dataset_stats.json",
         "gpu_id=0",
-        # No T5 (saves ~11GB host RAM on this shared box): task prompts come
-        # from the precomputed embedding cache, mirroring training.
+        # No T5 (saves ~11GB host RAM): task prompts come from the
+        # precomputed embedding cache, mirroring training.
         "model.load_text_encoder=false",
+        # Stage-1 checkpoints persist trainable parts only; the frozen video
+        # tower must reload from the Wan2.2 base, not stay randomly initialised.
+        "model.skip_dit_load_from_pretrain=false",
+        # Dataset stats: resolved from the checkpoint's run directory
+        # (runs/<run>/dataset_stats.json written by training) — the stats the
+        # policy was actually normalised with.
     ]
     with initialize_config_dir(config_dir=str(REPO_ROOT / "configs"), version_base="1.3"):
         cfg = compose(config_name="sim_libero.yaml", overrides=overrides)
+    OmegaConf.set_struct(cfg, False)
+    cfg.model._target_ = "fusionwam.training.runtime.create_fusion_model"
+    fusion_cfg = yaml.safe_load(open(REPO_ROOT / "configs" / "stage1.yaml"))
+    for k, v in fusion_cfg.get("fusion", {}).items():
+        cfg.model[k] = v
     model_device = els._resolve_eval_device(cfg)
     model_dtype = els._mixed_precision_to_model_dtype(cfg.get("mixed_precision", "bf16"))
     model = instantiate(cfg.model, model_dtype=model_dtype, device=model_device)
+    if getattr(model, "vlm_adapter", None) is None:
+        raise RuntimeError("Model was built without a VLM adapter; check configs/stage1.yaml fusion.vlm_path")
 
-    payload = torch.load(ckpt, map_location="cpu", mmap=True, weights_only=False)
-    model.mot.load_state_dict(payload["mot"], strict=False)
-    if model.proprio_encoder is not None and "proprio_encoder" in payload:
-        model.proprio_encoder.load_state_dict(payload["proprio_encoder"], strict=True)
-    del payload
+    # FusionWAM.load_checkpoint: MoT (strict=False over a trainable-only
+    # payload), proprio encoder, and the VLM adapter — errors if the adapter
+    # is missing instead of silently evaluating a fusion-less model.
+    model.load_checkpoint(ckpt)
     model = model.to(model_device).eval()
 
     from fusionwam.data.lerobot.utils.normalizer import load_dataset_stats_from_json
@@ -101,6 +118,8 @@ def run_episode(env, init_state, task_lang, task_context, dose, seed_key, model,
                 max_steps_override=None):
     import eval_libero_single as els
     from libero_utils import get_libero_dummy_action
+    from fusionwam.data.lerobot.robot_video_dataset import DEFAULT_PROMPT
+    vlm_prompt = DEFAULT_PROMPT.format(task=task_lang)  # == training sample["prompt"]
 
     max_steps = max_steps_override or els._get_max_steps(cfg.EVALUATION.task_suite_name)
     replan_steps = int(cfg.EVALUATION.get("replan_steps", 5))
@@ -134,7 +153,8 @@ def run_episode(env, init_state, task_lang, task_context, dose, seed_key, model,
         if not pending:
             chunk = predict_chunk(obs, task_context, model, processor, cfg,
                                   action_horizon=action_horizon, input_w=input_w,
-                                  input_h=input_h, model_device=model_device)
+                                  input_h=input_h, model_device=model_device,
+                                  vlm_prompt=vlm_prompt)
             pending = chunk[:replan_steps].tolist()
         obs, _, done, _ = env.step(pending.pop(0))
         t += 1
@@ -144,7 +164,7 @@ def run_episode(env, init_state, task_lang, task_context, dose, seed_key, model,
 
 
 def predict_chunk(obs, task_context, model, processor, cfg, *, action_horizon,
-                  input_w, input_h, model_device):
+                  input_w, input_h, model_device, vlm_prompt=None):
     """eval_libero_single._predict_action_chunk with cached text context."""
     import inspect
     import eval_libero_single as els
@@ -165,6 +185,7 @@ def predict_chunk(obs, task_context, model, processor, cfg, *, action_horizon,
         proprio[..., :3] = 0.0
     infer_kwargs = {
         "prompt": None,
+        "vlm_prompt": vlm_prompt,   # instruction text for the VLM prefix (FusionWAM)
         "context": context,
         "context_mask": context_mask,
         "input_image": image,

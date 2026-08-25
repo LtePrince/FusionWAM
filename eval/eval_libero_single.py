@@ -41,7 +41,10 @@ from fusionwam.data.lerobot.utils.normalizer import load_dataset_stats_from_json
 from fusionwam.shared.pytorch_utils import set_global_seed
 from fusionwam.data.lerobot.robot_video_dataset import DEFAULT_PROMPT
 from libero.libero import benchmark
-from action_ensembler import ActionEnsembler
+try:
+    from action_ensembler import ActionEnsembler
+except ImportError:  # optional helper; only needed with EVALUATION.use_action_ensembler=true
+    ActionEnsembler = None
 
 OmegaConf.register_new_resolver("eval", eval)
 OmegaConf.register_new_resolver("max", lambda x: max(x))
@@ -467,6 +470,8 @@ def run_single_episode(
     env.reset()
     obs = env.set_init_state(initial_state)
     if use_action_ensembler:
+        if ActionEnsembler is None:
+            raise ImportError("EVALUATION.use_action_ensembler=true but eval/action_ensembler.py is unavailable")
         ensembler = ActionEnsembler()
         ensembler.reset()
 

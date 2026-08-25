@@ -137,14 +137,31 @@ class FusionWAM(WAMJoint):
 
     @torch.no_grad()
     def infer_action(self, *args, **kwargs):
+        # The VLM reads the raw instruction text. WAM.infer_action makes
+        # `prompt` mutually exclusive with precomputed T5 `context`, so
+        # evaluators that feed cached context pass the text via `vlm_prompt`
+        # (same string training used: sample["prompt"], i.e. DEFAULT_PROMPT
+        # formatted with the task). Running a fused model without the prefix
+        # is never what an evaluation means, so that is an error, not a
+        # silent fallback.
+        vlm_prompt = kwargs.pop("vlm_prompt", None)
+        if vlm_prompt is None:
+            vlm_prompt = kwargs.get("prompt")
         try:
             if self.vlm_encoder is not None:
-                prompt = kwargs.get("prompt")
                 image = kwargs.get("input_image")
-                if image is not None and prompt is not None:
-                    img = image if image.ndim == 4 else image.unsqueeze(0)
-                    self._build_vlm_prefix(img.float().clamp(0, 1),
-                                           [prompt] * img.shape[0])
+                if image is None:
+                    raise ValueError(
+                        "FusionWAM.infer_action needs `input_image` to build the VLM prefix.")
+                if vlm_prompt is None:
+                    raise ValueError(
+                        "FusionWAM.infer_action: a VLM is attached but no instruction text "
+                        "was given; pass `vlm_prompt=<DEFAULT_PROMPT-formatted instruction>` "
+                        "(or `prompt`) — evaluating without the semantic prefix is not "
+                        "a FusionWAM evaluation.")
+                img = image if image.ndim == 4 else image.unsqueeze(0)
+                self._build_vlm_prefix(img.float().clamp(0, 1),
+                                       [vlm_prompt] * img.shape[0])
             return super().infer_action(*args, **kwargs)
         finally:
             self._clear_vlm_prefix()

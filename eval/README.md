@@ -9,10 +9,14 @@ FusionWAM 的一切训练产物按以下流程验收。
   `eval_libero_single.py`(推理助手)+ `libero_utils.py`(env 工具)。
 - 需自装外部 sim 栈:LIBERO(github.com/Lifelong-Robot-Learning/LIBERO)+
   robosuite + MuJoCo,EGL 渲染(`MUJOCO_GL=egl`)。
-- 硬性数据工件(公网脚本可得):
-  `checkpoints/wam_release/libero_uncond_2cam224_dataset_stats.json`
-  (scripts/download_weights.sh)与 `data/text_embeds_cache/libero`
-  (scripts/download_data.sh 后跑 precompute_text_embeds.py)。
+- 模型构建与训练同款:joint 任务 + `create_fusion_model` + stage1.yaml 的
+  `vlm_path`;`skip_dit_load_from_pretrain=false`(stage-1 档只存可训部分,
+  冻结视频塔从 Wan2.2 底座重载);经 `FusionWAM.load_checkpoint` 加载(adapter
+  缺失即报错)。推理经 `vlm_prompt` 传入 DEFAULT_PROMPT 格式化的指令文本
+  (底层 `prompt` 与预计算 T5 `context` 互斥);挂了 VLM 却无文本 = 硬错误。
+- 数据工件:归一化统计取 checkpoint 所在 run 目录的 `dataset_stats.json`
+  (训练自算并写入 `runs/<run>/`,即策略实际使用的统计;勿换成 release 版);
+  `data/text_embeds_cache/libero`(precompute_text_embeds.py 的产物)。
 
 ## 运行
 
