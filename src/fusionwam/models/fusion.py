@@ -15,6 +15,7 @@ Video rows never attend the VLM prefix in stage 1 (frozen video tower keeps
 its training distribution); action rows do, behind source dropout.
 """
 
+import functools
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -136,6 +137,9 @@ class FusionWAM(WAMJoint):
             self._clear_vlm_prefix()
 
     @torch.no_grad()
+    @functools.wraps(WAMJoint.infer_action)  # keep the real signature visible:
+    # callers probe inspect.signature(model.infer_action) for kwargs like
+    # num_video_frames; a bare *args/**kwargs wrapper would hide them.
     def infer_action(self, *args, **kwargs):
         # The VLM reads the raw instruction text. WAM.infer_action makes
         # `prompt` mutually exclusive with precomputed T5 `context`, so
