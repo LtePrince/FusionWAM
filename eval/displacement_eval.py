@@ -115,7 +115,7 @@ def target_object(bddl_path: str) -> str:
 
 def run_episode(env, init_state, task_lang, task_context, dose, seed_key, model,
                 processor, cfg, model_device, target,
-                max_steps_override=None):
+                max_steps_override=None, save_video_path=None):
     import eval_libero_single as els
     from libero_utils import get_libero_dummy_action
     from fusionwam.data.lerobot.robot_video_dataset import DEFAULT_PROMPT
@@ -148,6 +148,9 @@ def run_episode(env, init_state, task_lang, task_context, dose, seed_key, model,
         sim.forward()
         for _ in range(3):
             obs, _, _, _ = env.step(get_libero_dummy_action())
+    frames = []
+    if save_video_path:
+        frames.append(np.ascontiguousarray(obs["agentview_image"][::-1, ::-1]))
     pending, done, t = [], False, 0
     while t < max_steps:
         if not pending:
@@ -155,11 +158,21 @@ def run_episode(env, init_state, task_lang, task_context, dose, seed_key, model,
                                   action_horizon=action_horizon, input_w=input_w,
                                   input_h=input_h, model_device=model_device,
                                   vlm_prompt=vlm_prompt)
+            if save_video_path and t == 0:
+                c = np.asarray(chunk)
+                print(f"    [debug] chunk shape={c.shape} min={c.min():.3f} "
+                      f"max={c.max():.3f} |mean|={np.abs(c).mean():.3f} "
+                      f"gripper_head={np.round(c[:5, -1], 3).tolist()}", flush=True)
             pending = chunk[:replan_steps].tolist()
         obs, _, done, _ = env.step(pending.pop(0))
         t += 1
+        if save_video_path:
+            frames.append(np.ascontiguousarray(obs["agentview_image"][::-1, ::-1]))
         if done:
             break
+    if save_video_path and frames:
+        import imageio
+        imageio.mimsave(save_video_path, frames, fps=20)
     return bool(done), t
 
 
@@ -228,6 +241,9 @@ def main():
     parser.add_argument("--num-inference-steps", type=int, default=None,
                         help="override flow-matching denoise steps (latency screen)")
     parser.add_argument("--out", required=True)
+    parser.add_argument("--save-video", default=None,
+                        help="dir for per-episode agentview mp4s (diagnostic; "
+                             "also prints first-chunk action stats)")
     args = parser.parse_args()
 
     from libero.libero import benchmark, get_libero_path
@@ -259,10 +275,16 @@ def main():
             for trial in range(args.trials):
                 for d_i, dose in enumerate(doses):
                     seed_key = 7000 + trial * 10 + d_i  # same family as the baseline curve
+                    vid = None
+                    if args.save_video:
+                        vdir = pathlib.Path(args.save_video)
+                        vdir.mkdir(parents=True, exist_ok=True)
+                        vid = str(vdir / f"t{tid}_trial{trial}_dose{int(dose*100)}cm.mp4")
                     success, steps = run_episode(
                         env, inits[trial], task.language, task_context, dose,
                         seed_key, model, processor, cfg, model_device,
-                        target, max_steps_override=args.max_steps)
+                        target, max_steps_override=args.max_steps,
+                        save_video_path=vid)
                     results.append({"task": tid, "trial": trial, "dose": dose,
                                     "success": success, "steps": steps})
                     print(f"t{tid} trial{trial} dose{int(dose*100)}cm: "
