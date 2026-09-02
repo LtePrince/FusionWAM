@@ -30,6 +30,8 @@ def main():
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--num-samples", type=int, default=6)
     ap.add_argument("--num-inference-steps", type=int, default=10)
+    ap.add_argument("--loss-draws", type=int, default=4,
+                    help="flow-matching noise draws to average the teacher-forced loss over")
     args = ap.parse_args()
 
     import numpy as np
@@ -100,20 +102,26 @@ def main():
     for i in idxs:
         sample = to_batch(train_ds[int(i)])
         dev = {k: (v.to("cuda") if torch.is_tensor(v) else v) for k, v in sample.items()}
+        # The flow-matching loss draws a random noise level each call — the
+        # single-draw variance is large, so average several draws.
+        a_draws = []
         with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
-            loss, loss_dict = model.training_loss(dev)
+            for _ in range(args.loss_draws):
+                _, loss_dict = model.training_loss(dev)
+                a_draws.append(float(loss_dict.get("loss_action", float("nan"))))
+        a_mean, a_std = float(np.mean(a_draws)), float(np.std(a_draws))
         gt = dev["action"][0].float().cpu()
         b = rollout_l1(dev, gt, with_vlm=True)
         c = rollout_l1(dev, gt, with_vlm=False)
         z = float(gt.abs().mean())
-        tf.append(float(loss)); rb.append(b); rc.append(c); zb.append(z)
-        comp = " ".join(f"{k}={float(v):.4f}" for k, v in loss_dict.items())
-        print(f"sample {i}: A_teacher_loss={float(loss):.4f} ({comp}) "
+        tf.append(a_mean); rb.append(b); rc.append(c); zb.append(z)
+        print(f"sample {i}: A_action_loss={a_mean:.4f}±{a_std:.4f} "
+              f"(draws={args.loss_draws}) "
               f"B_rollout_L1={b:.4f} C_rollout_L1_noVLM={c:.4f} zero_L1={z:.4f}",
               flush=True)
 
     print("\n=== summary (means) ===")
-    print(f"A teacher-forced loss : {np.mean(tf):.4f}")
+    print(f"A action loss (teacher): {np.mean(tf):.4f}")
     print(f"B rollout L1 (VLM on) : {np.mean(rb):.4f}")
     print(f"C rollout L1 (no VLM) : {np.mean(rc):.4f}")
     print(f"  zero-action baseline: {np.mean(zb):.4f}")

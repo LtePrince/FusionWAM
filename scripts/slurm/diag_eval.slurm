@@ -16,14 +16,18 @@ export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 
 source ./.venv/bin/activate
 
-echo "=== [1/2] rollout-gap 诊断（训练样本三臂对照，约 10 分钟）==="
+echo "=== [1/2] rollout-gap 诊断（训练样本三臂对照，loss 多次抽样平均）==="
 CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/diagnose_rollout_gap.py \
     --ckpt runs/stage1/checkpoints/weights/step_020000.pt
 
-echo "=== [2/2] 零剂量探针（6 集，约 20 分钟）==="
+echo "=== [2/2] 零剂量探针（6 集，每集独立进程，防原生崩溃连坐）==="
 mkdir -p results
-MUJOCO_GL=egl CUDA_VISIBLE_DEVICES=0 .venv/bin/python eval/displacement_eval.py \
-    --ckpt runs/stage1/checkpoints/weights/step_020000.pt \
-    --tasks 0 --trials 6 --doses 0 --out results/probe_t0b.json
+for k in 0 1 2 3 4 5; do
+    MUJOCO_GL=egl CUDA_VISIBLE_DEVICES=0 .venv/bin/python eval/displacement_eval.py \
+        --ckpt runs/stage1/checkpoints/weights/step_020000.pt \
+        --tasks 0 --trial-list $k --doses 0 \
+        --out results/probe_t0_trial$k.json \
+        || echo "trial $k CRASHED (native abort), continuing"
+done
 
 echo "=== done ==="

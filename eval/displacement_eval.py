@@ -234,6 +234,9 @@ def main():
     parser.add_argument("--suite", default="libero_object")
     parser.add_argument("--tasks", default="0-4")
     parser.add_argument("--trials", type=int, default=6)
+    parser.add_argument("--trial-list", default=None,
+                        help="comma-separated trial indices (overrides --trials); "
+                             "lets a wrapper isolate one episode per process")
     parser.add_argument("--doses", default="0,0.04,0.07,0.10,0.15",
                         help="acceptance protocol incl. zero-dose control")
     parser.add_argument("--max-steps", type=int, default=None,
@@ -270,7 +273,9 @@ def main():
         task_context = load_task_context(task.language, model,
                                          REPO_ROOT / "data/text_embeds_cache/libero")
         inits = suite.get_task_init_states(tid)
-        for trial in range(args.trials):
+        trial_indices = ([int(x) for x in args.trial_list.split(",")]
+                         if args.trial_list else list(range(args.trials)))
+        for trial in trial_indices:
             for d_i, dose in enumerate(doses):
                     seed_key = 7000 + trial * 10 + d_i  # same family as the baseline curve
                     vid = None
