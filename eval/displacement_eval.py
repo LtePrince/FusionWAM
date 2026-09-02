@@ -269,29 +269,32 @@ def main():
         target = target_object(bddl)
         task_context = load_task_context(task.language, model,
                                          REPO_ROOT / "data/text_embeds_cache/libero")
-        env, _ = get_libero_env(task, resolution=256, seed=0)
-        try:
-            inits = suite.get_task_init_states(tid)
-            for trial in range(args.trials):
-                for d_i, dose in enumerate(doses):
+        inits = suite.get_task_init_states(tid)
+        for trial in range(args.trials):
+            for d_i, dose in enumerate(doses):
                     seed_key = 7000 + trial * 10 + d_i  # same family as the baseline curve
                     vid = None
                     if args.save_video:
                         vdir = pathlib.Path(args.save_video)
                         vdir.mkdir(parents=True, exist_ok=True)
                         vid = str(vdir / f"t{tid}_trial{trial}_dose{int(dose*100)}cm.mp4")
-                    success, steps = run_episode(
-                        env, inits[trial], task.language, task_context, dose,
-                        seed_key, model, processor, cfg, model_device,
-                        target, max_steps_override=args.max_steps,
-                        save_video_path=vid)
+                    # Fresh env per episode: reusing one MuJoCo/EGL env across
+                    # episodes intermittently SIGABRTs in native code at the
+                    # second episode (with and without frame capture).
+                    env, _ = get_libero_env(task, resolution=256, seed=0)
+                    try:
+                        success, steps = run_episode(
+                            env, inits[trial], task.language, task_context, dose,
+                            seed_key, model, processor, cfg, model_device,
+                            target, max_steps_override=args.max_steps,
+                            save_video_path=vid)
+                    finally:
+                        env.close()
                     results.append({"task": tid, "trial": trial, "dose": dose,
                                     "success": success, "steps": steps})
                     print(f"t{tid} trial{trial} dose{int(dose*100)}cm: "
                           f"{'OK' if success else 'fail'}", flush=True)
                     pathlib.Path(args.out).write_text(json.dumps(results))
-        finally:
-            env.close()
 
     per_dose = collections.defaultdict(list)
     for r in results:
