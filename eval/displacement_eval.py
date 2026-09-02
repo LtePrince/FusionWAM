@@ -36,13 +36,48 @@ DEVICE = "cuda"
 MASK_PROPRIO = False  # set by --mask-proprio (eval-side bypass block diagnostic)
 
 
-def load_model_and_processor(ckpt: str):
+def load_model_and_processor(ckpt: str, plain_wam: bool = False):
     from hydra import compose, initialize_config_dir
     from hydra.utils import instantiate
     import eval_libero_single as els
 
     import yaml
     from omegaconf import OmegaConf
+
+    if plain_wam:
+        # Known-good control path: the released uncond checkpoint (full MoT in
+        # the payload) through the original build — uncond task, factory from
+        # sim_libero defaults (skip_dit_load_from_pretrain=true), release
+        # normalization stats. Splits "our policy is weak" from "this
+        # machine's sim harness is broken".
+        stats_json = REPO_ROOT / "checkpoints/wam_release/libero_uncond_2cam224_dataset_stats.json"
+        assert stats_json.is_file(), (
+            f"control stats missing: {stats_json}\nDownload with:\n"
+            "  huggingface-cli download yuanty/fastwam libero_uncond_2cam224.pt "
+            "libero_uncond_2cam224_dataset_stats.json --local-dir checkpoints/wam_release")
+        overrides = [
+            "task=libero_uncond_2cam224_1e-4",
+            f"ckpt={ckpt}",
+            f"EVALUATION.dataset_stats_path={stats_json}",
+            "gpu_id=0",
+            "model.load_text_encoder=false",
+        ]
+        with initialize_config_dir(config_dir=str(REPO_ROOT / "configs"), version_base="1.3"):
+            cfg = compose(config_name="sim_libero.yaml", overrides=overrides)
+        model_device = els._resolve_eval_device(cfg)
+        model_dtype = els._mixed_precision_to_model_dtype(cfg.get("mixed_precision", "bf16"))
+        model = instantiate(cfg.model, model_dtype=model_dtype, device=model_device)
+        payload = torch.load(ckpt, map_location="cpu", mmap=True, weights_only=False)
+        model.mot.load_state_dict(payload["mot"], strict=False)
+        if model.proprio_encoder is not None and "proprio_encoder" in payload:
+            model.proprio_encoder.load_state_dict(payload["proprio_encoder"], strict=True)
+        del payload
+        model = model.to(model_device).eval()
+        from fusionwam.data.lerobot.utils.normalizer import load_dataset_stats_from_json
+        stats = load_dataset_stats_from_json(str(els._resolve_dataset_stats_path(cfg)))
+        processor = instantiate(cfg.data.train.processor).eval()
+        processor.set_normalizer_from_stats(stats)
+        return model, processor, cfg, model_device
 
     # Build the model exactly the way train.py does for stage 1: the JOINT
     # task (WAMJoint mask geometry the checkpoint was trained with), the
@@ -119,7 +154,10 @@ def run_episode(env, init_state, task_lang, task_context, dose, seed_key, model,
     import eval_libero_single as els
     from libero_utils import get_libero_dummy_action
     from fusionwam.data.lerobot.robot_video_dataset import DEFAULT_PROMPT
-    vlm_prompt = DEFAULT_PROMPT.format(task=task_lang)  # == training sample["prompt"]
+    # == training sample["prompt"]; None for plain WAM (its infer_action has
+    # no vlm_prompt kwarg and no VLM to feed).
+    vlm_prompt = (DEFAULT_PROMPT.format(task=task_lang)
+                  if getattr(model, "vlm_encoder", None) is not None else None)
 
     max_steps = max_steps_override or els._get_max_steps(cfg.EVALUATION.task_suite_name)
     replan_steps = int(cfg.EVALUATION.get("replan_steps", 5))
@@ -198,7 +236,6 @@ def predict_chunk(obs, task_context, model, processor, cfg, *, action_horizon,
         proprio[..., :3] = 0.0
     infer_kwargs = {
         "prompt": None,
-        "vlm_prompt": vlm_prompt,   # instruction text for the VLM prefix (FusionWAM)
         "context": context,
         "context_mask": context_mask,
         "input_image": image,
@@ -213,6 +250,8 @@ def predict_chunk(obs, task_context, model, processor, cfg, *, action_horizon,
         "rand_device": str(cfg.EVALUATION.get("rand_device", "cpu")),
         "tiled": bool(cfg.EVALUATION.get("tiled", False)),
     }
+    if vlm_prompt is not None:
+        infer_kwargs["vlm_prompt"] = vlm_prompt  # instruction text for the VLM prefix
     if "num_video_frames" in inspect.signature(model.infer_action).parameters:
         infer_kwargs["num_video_frames"] = els._get_num_video_frames(cfg)
     with torch.no_grad():
@@ -229,6 +268,9 @@ def predict_chunk(obs, task_context, model, processor, cfg, *, action_horizon,
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt", required=True)
+    parser.add_argument("--plain-wam", action="store_true",
+                        help="control mode: build the plain uncond WAM (release "
+                             "checkpoint with full MoT payload) instead of FusionWAM")
     parser.add_argument("--mask-proprio", action="store_true",
                         help="zero absolute eef position dims at eval (diagnostic)")
     parser.add_argument("--suite", default="libero_object")
@@ -254,7 +296,8 @@ def main():
 
     global MASK_PROPRIO
     MASK_PROPRIO = args.mask_proprio
-    model, processor, cfg, model_device = load_model_and_processor(args.ckpt)
+    model, processor, cfg, model_device = load_model_and_processor(
+        args.ckpt, plain_wam=args.plain_wam)
     cfg.EVALUATION.task_suite_name = args.suite
     if args.num_inference_steps is not None:
         cfg.EVALUATION.num_inference_steps = int(args.num_inference_steps)
