@@ -164,7 +164,13 @@ class FusionWAM(WAMJoint):
                         "(or `prompt`) — evaluating without the semantic prefix is not "
                         "a FusionWAM evaluation.")
                 img = image if image.ndim == 4 else image.unsqueeze(0)
-                self._build_vlm_prefix(img.float().clamp(0, 1),
+                img = img.float()
+                # input_image follows the model's (-1,1) convention; the VLM
+                # processor wants [0,1]. A bare clamp(0,1) here crushed the
+                # negative half to black and fed the VLM a mangled image.
+                if img.min() < -1e-3:
+                    img = (img + 1.0) / 2.0
+                self._build_vlm_prefix(img.clamp(0.0, 1.0),
                                        [vlm_prompt] * img.shape[0])
             return super().infer_action(*args, **kwargs)
         finally:
