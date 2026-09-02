@@ -1084,7 +1084,6 @@ class WAM(torch.nn.Module):
                 context_mask=context_mask,
                 video_kv_cache=video_kv_cache,
                 attention_mask=attention_mask,
-            extra_kv=self._consume_extra_kv(),
                 video_seq_len=video_seq_len,
             )
             pred_action = pred_action_posi
