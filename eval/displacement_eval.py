@@ -268,6 +268,9 @@ def predict_chunk(obs, task_context, model, processor, cfg, *, action_horizon,
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt", required=True)
+    parser.add_argument("--no-vlm", action="store_true",
+                        help="diagnostic: detach the VLM prefix after loading the "
+                             "checkpoint (evaluates the source-dropout fallback path)")
     parser.add_argument("--plain-wam", action="store_true",
                         help="control mode: build the plain uncond WAM (release "
                              "checkpoint with full MoT payload) instead of FusionWAM")
@@ -301,6 +304,13 @@ def main():
     MASK_PROPRIO = args.mask_proprio
     model, processor, cfg, model_device = load_model_and_processor(
         args.ckpt, plain_wam=args.plain_wam)
+    if args.no_vlm and not args.plain_wam:
+        # Detach after load_checkpoint (which requires the adapter to accept the
+        # payload); run_episode then auto-omits vlm_prompt and infer_action
+        # passes straight through — the dropout-trained no-prefix path.
+        model.vlm_encoder = None
+        model.vlm_adapter = None
+        print("[diag] VLM prefix detached (--no-vlm)", flush=True)
     cfg.EVALUATION.task_suite_name = args.suite
     if args.num_inference_steps is not None:
         cfg.EVALUATION.num_inference_steps = int(args.num_inference_steps)
