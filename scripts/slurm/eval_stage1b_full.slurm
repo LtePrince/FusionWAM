@@ -29,7 +29,8 @@ for t in 0 1 2 3 4; do
       f=$OUT/t${t}_trial${k}_d${di}.json
       [ -s "$f" ] && { echo "skip existing $f"; continue; }   # 断点续跑
       MUJOCO_GL=egl CUDA_VISIBLE_DEVICES=0 .venv/bin/python eval/displacement_eval.py \
-          --ckpt $CKPT --tasks $t --trial-list $k \
+          --ckpt $CKPT --base-ckpt checkpoints/wam_release/libero_uncond_2cam224.pt \
+          --tasks $t --trial-list $k \
           --doses $d --dose-index-base $di \
           --out $f \
           || echo "t${t} trial${k} d${di} CRASHED, continuing"

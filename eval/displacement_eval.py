@@ -36,7 +36,7 @@ DEVICE = "cuda"
 MASK_PROPRIO = False  # set by --mask-proprio (eval-side bypass block diagnostic)
 
 
-def load_model_and_processor(ckpt: str, plain_wam: bool = False):
+def load_model_and_processor(ckpt: str, plain_wam: bool = False, base_ckpt: str = None):
     from hydra import compose, initialize_config_dir
     from hydra.utils import instantiate
     import eval_libero_single as els
@@ -112,6 +112,13 @@ def load_model_and_processor(ckpt: str, plain_wam: bool = False):
     # FusionWAM.load_checkpoint: MoT (strict=False over a trainable-only
     # payload), proprio encoder, and the VLM adapter — errors if the adapter
     # is missing instead of silently evaluating a fusion-less model.
+    # Trainable-only checkpoints do NOT carry the frozen towers. If training
+    # warm-started them from a different base (stage-1b: resume=<release.pt>),
+    # that base must be layered in FIRST or the action expert reads features
+    # from the wrong (generic) tower — bug #15.
+    if base_ckpt:
+        print(f"[eval] layering base checkpoint first: {base_ckpt}", flush=True)
+        model.load_checkpoint(base_ckpt)
     model.load_checkpoint(ckpt)
     model = model.to(model_device).eval()
 
@@ -268,6 +275,10 @@ def predict_chunk(obs, task_context, model, processor, cfg, *, action_horizon,
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt", required=True)
+    parser.add_argument("--base-ckpt", default=None,
+                        help="full checkpoint the frozen towers were warm-started "
+                             "from (loaded before --ckpt; required for trainable-only "
+                             "checkpoints trained with resume=<base>)")
     parser.add_argument("--no-vlm", action="store_true",
                         help="diagnostic: detach the VLM prefix after loading the "
                              "checkpoint (evaluates the source-dropout fallback path)")
@@ -303,7 +314,7 @@ def main():
     global MASK_PROPRIO
     MASK_PROPRIO = args.mask_proprio
     model, processor, cfg, model_device = load_model_and_processor(
-        args.ckpt, plain_wam=args.plain_wam)
+        args.ckpt, plain_wam=args.plain_wam, base_ckpt=args.base_ckpt)
     if args.no_vlm and not args.plain_wam:
         # Detach after load_checkpoint (which requires the adapter to accept the
         # payload); run_episode then auto-omits vlm_prompt and infer_action

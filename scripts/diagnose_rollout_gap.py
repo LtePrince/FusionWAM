@@ -30,6 +30,10 @@ def main():
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--num-samples", type=int, default=6)
     ap.add_argument("--num-inference-steps", type=int, default=10)
+    ap.add_argument("--base-ckpt", default=None,
+                    help="full checkpoint the frozen towers were warm-started from "
+                         "(loaded before --ckpt; required for trainable-only "
+                         "checkpoints trained with resume=<base>)")
     ap.add_argument("--loss-draws", type=int, default=4,
                     help="flow-matching noise draws to average the teacher-forced loss over")
     args = ap.parse_args()
@@ -60,6 +64,9 @@ def main():
     misc.register_work_dir("/tmp/fusion_diag")
 
     model = instantiate(cfg.model, model_dtype=torch.bfloat16, device="cuda")
+    if args.base_ckpt:
+        print(f"[diag] layering base checkpoint first: {args.base_ckpt}", flush=True)
+        model.load_checkpoint(args.base_ckpt)
     model.load_checkpoint(args.ckpt)
     model = model.to("cuda").eval()
 

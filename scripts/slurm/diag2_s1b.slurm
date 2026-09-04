@@ -21,13 +21,14 @@ source ./.venv/bin/activate
 CKPT=runs/stage1b/checkpoints/weights/step_020000.pt
 
 echo "=== [1/2] 三臂诊断(stage-1b 档)==="
-CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/diagnose_rollout_gap.py --ckpt $CKPT
+CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/diagnose_rollout_gap.py --ckpt $CKPT --base-ckpt checkpoints/wam_release/libero_uncond_2cam224.pt
 
 echo "=== [2/2] 零剂量 6 集,VLM 前缀关闭(--no-vlm)==="
 mkdir -p results/gate_s1b_novlm
 for k in 0 1 2 3 4 5; do
     MUJOCO_GL=egl CUDA_VISIBLE_DEVICES=0 .venv/bin/python eval/displacement_eval.py \
-        --ckpt $CKPT --no-vlm --tasks 0 --trial-list $k --doses 0 \
+        --ckpt $CKPT --base-ckpt checkpoints/wam_release/libero_uncond_2cam224.pt \
+        --no-vlm --tasks 0 --trial-list $k --doses 0 \
         --out results/gate_s1b_novlm/t0_trial$k.json \
         || echo "trial $k CRASHED, continuing"
 done
