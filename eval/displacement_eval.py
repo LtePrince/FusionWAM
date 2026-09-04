@@ -276,6 +276,9 @@ def main():
     parser.add_argument("--suite", default="libero_object")
     parser.add_argument("--tasks", default="0-4")
     parser.add_argument("--trials", type=int, default=6)
+    parser.add_argument("--dose-index-base", type=int, default=0,
+                        help="index of the first --doses entry within the canonical "
+                             "dose list (seed-family pairing for isolated runs)")
     parser.add_argument("--trial-list", default=None,
                         help="comma-separated trial indices (overrides --trials); "
                              "lets a wrapper isolate one episode per process")
@@ -320,7 +323,11 @@ def main():
                          if args.trial_list else list(range(args.trials)))
         for trial in trial_indices:
             for d_i, dose in enumerate(doses):
-                    seed_key = 7000 + trial * 10 + d_i  # same family as the baseline curve
+                    # Same seed family as the baseline curve. d_i must be the
+                    # dose's index in the canonical 5-dose list; when a wrapper
+                    # isolates one dose per process it passes the true index
+                    # via --dose-index-base to keep seed pairing intact.
+                    seed_key = 7000 + trial * 10 + (args.dose_index_base + d_i)
                     vid = None
                     if args.save_video:
                         vdir = pathlib.Path(args.save_video)
