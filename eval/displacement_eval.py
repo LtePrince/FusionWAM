@@ -279,6 +279,10 @@ def main():
                         help="full checkpoint the frozen towers were warm-started "
                              "from (loaded before --ckpt; required for trainable-only "
                              "checkpoints trained with resume=<base>)")
+    parser.add_argument("--no-video", action="store_true",
+                        help="diagnostic: block action->video attention at eval "
+                             "(the video-source-dropout path; VLM prefix + T5 + "
+                             "proprio only)")
     parser.add_argument("--no-vlm", action="store_true",
                         help="diagnostic: detach the VLM prefix after loading the "
                              "checkpoint (evaluates the source-dropout fallback path)")
@@ -322,6 +326,9 @@ def main():
         model.vlm_encoder = None
         model.vlm_adapter = None
         print("[diag] VLM prefix detached (--no-vlm)", flush=True)
+    if args.no_video and not args.plain_wam:
+        model.force_drop_video = True
+        print("[diag] action->video attention blocked (--no-video)", flush=True)
     cfg.EVALUATION.task_suite_name = args.suite
     if args.num_inference_steps is not None:
         cfg.EVALUATION.num_inference_steps = int(args.num_inference_steps)

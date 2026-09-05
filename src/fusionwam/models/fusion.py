@@ -191,8 +191,11 @@ class FusionWAM(WAMJoint):
             device=device,
         )
         # Source dropout on the action->video block (Gate-1/B2: each pathway
-        # must learn to carry the task alone).
-        if self.training and torch.rand(()) < getattr(self, "p_drop_video", 0.0):
+        # must learn to carry the task alone). `force_drop_video` applies the
+        # same cut deterministically at eval — the no-video source ablation.
+        drop_video = getattr(self, "force_drop_video", False) or (
+            self.training and torch.rand(()) < getattr(self, "p_drop_video", 0.0))
+        if drop_video:
             mask = mask.clone()
             mask[video_seq_len:, :video_seq_len] = False
         extra = getattr(self, "_extra_len", 0)
