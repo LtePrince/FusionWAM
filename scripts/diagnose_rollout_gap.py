@@ -104,7 +104,7 @@ def main():
         L = min(int(pa.shape[0]), int(gt_action.shape[0]))
         return float((pa[:L].float().cpu() - gt_action[:L]).abs().mean())
 
-    tf, rb, rc, zb = [], [], [], []
+    tf, tf2, rb, rc, zb = [], [], [], [], []
     idxs = np.linspace(0, len(train_ds) - 1, args.num_samples).astype(int)
     for i in idxs:
         sample = to_batch(train_ds[int(i)])
@@ -117,18 +117,35 @@ def main():
                 _, loss_dict = model.training_loss(dev)
                 a_draws.append(float(loss_dict.get("loss_action", float("nan"))))
         a_mean, a_std = float(np.mean(a_draws)), float(np.std(a_draws))
+        # A2: teacher-forced WITHOUT the prefix — the loss-level consumption
+        # test (equal to A => the training objective itself ignores the
+        # prefix; worse => prefix carries video-redundant information).
+        enc, ad = model.vlm_encoder, model.vlm_adapter
+        model.vlm_encoder, model.vlm_adapter = None, None
+        try:
+            a2_draws = []
+            with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+                for _ in range(args.loss_draws):
+                    _, ld2 = model.training_loss(dev)
+                    a2_draws.append(float(ld2.get("loss_action", float("nan"))))
+        finally:
+            model.vlm_encoder, model.vlm_adapter = enc, ad
+        a2_mean, a2_std = float(np.mean(a2_draws)), float(np.std(a2_draws))
+        tf2.append(a2_mean)
         gt = dev["action"][0].float().cpu()
         b = rollout_l1(dev, gt, with_vlm=True)
         c = rollout_l1(dev, gt, with_vlm=False)
         z = float(gt.abs().mean())
         tf.append(a_mean); rb.append(b); rc.append(c); zb.append(z)
         print(f"sample {i}: A_action_loss={a_mean:.4f}±{a_std:.4f} "
+              f"A2_noVLM={a2_mean:.4f}±{a2_std:.4f} "
               f"(draws={args.loss_draws}) "
               f"B_rollout_L1={b:.4f} C_rollout_L1_noVLM={c:.4f} zero_L1={z:.4f}",
               flush=True)
 
     print("\n=== summary (means) ===")
-    print(f"A action loss (teacher): {np.mean(tf):.4f}")
+    print(f"A  action loss (teacher, VLM on) : {np.mean(tf):.4f}")
+    print(f"A2 action loss (teacher, no VLM) : {np.mean(tf2):.4f}")
     print(f"B rollout L1 (VLM on) : {np.mean(rb):.4f}")
     print(f"C rollout L1 (no VLM) : {np.mean(rc):.4f}")
     print(f"  zero-action baseline: {np.mean(zb):.4f}")
